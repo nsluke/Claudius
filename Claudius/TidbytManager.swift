@@ -134,9 +134,9 @@ struct TidbytManager {
 
         // sessionId groups all messages in a single Claude Code conversation.
         let convId = entry.sessionId ?? entry.uuid ?? ts
-        
+
         let currentCost = Pricing.costUSD(for: usage, model: entry.message?.model)
-        let currentTokens = (usage.input_tokens ?? 0) 
+        let currentTokens = (usage.input_tokens ?? 0)
                           + (usage.output_tokens ?? 0)
                           + (usage.cache_creation_input_tokens ?? 0)
 
@@ -150,9 +150,19 @@ struct TidbytManager {
           conversationPeaks[convId] = (currentCost, currentTokens, date)
           stats.messages += 1 // Count unique threads/starts
         }
-        
+
+        // Bucket output tokens into 10-minute time series slots.
+        // Output tokens represent actual work done per turn (not cumulative context).
+        let bucketIndex = Int(date.timeIntervalSince(windowStart) / 600)
+        if bucketIndex >= 0 && bucketIndex < 30 {
+          stats.tokenTimeSeries[bucketIndex] += (usage.output_tokens ?? 0)
+        }
+
         if stats.oldestMessageDate == nil || date < stats.oldestMessageDate! {
             stats.oldestMessageDate = date
+        }
+        if stats.newestMessageDate == nil || date > stats.newestMessageDate! {
+            stats.newestMessageDate = date
         }
       }
     }

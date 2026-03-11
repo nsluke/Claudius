@@ -35,25 +35,21 @@ struct UsageView: View {
         : "\(t)"
   }
 
-  private var timeToReset: String {
-    guard let oldest = appState.currentUsage.oldestMessageDate else {
-      return "N/A"
-    }
-    let expirationDate = oldest.addingTimeInterval(5 * 60 * 60)
-    let timeInterval = expirationDate.timeIntervalSinceNow
-    
-    if timeInterval <= 0 {
-      return "Now"
-    }
-    
-    let hours = Int(timeInterval) / 3600
-    let minutes = Int(timeInterval) / 60 % 60
-    
-    if hours > 0 {
-        return "\(hours)h \(minutes)m"
-    } else {
-        return "\(minutes)m"
-    }
+  private func formatInterval(_ date: Date?) -> String {
+    guard let date else { return "N/A" }
+    let seconds = date.addingTimeInterval(5 * 60 * 60).timeIntervalSinceNow
+    if seconds <= 0 { return "Now" }
+    let h = Int(seconds) / 3600
+    let m = Int(seconds) / 60 % 60
+    return h > 0 ? "\(h)h \(m)m" : "\(m)m"
+  }
+
+  private var nextDropIn: String {
+    formatInterval(appState.currentUsage.oldestMessageDate)
+  }
+
+  private var fullyClearIn: String {
+    formatInterval(appState.currentUsage.newestMessageDate)
   }
 
   var body: some View {
@@ -107,6 +103,16 @@ struct UsageView: View {
           color: tokenColor
         )
 
+        TokenTimeSeriesChart(
+          buckets: appState.currentUsage.tokenTimeSeries,
+          color: tokenColor
+        )
+
+        Text("These figures are estimates. Anthropic uses a 5-hour sliding window — each message ages out individually 5 hours after it was sent, so usage decreases gradually rather than resetting all at once.")
+          .font(.caption)
+          .foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+
         HStack {
           VStack(alignment: .leading, spacing: 4) {
             Text("Messages")
@@ -117,10 +123,18 @@ struct UsageView: View {
           }
           Spacer()
           VStack(alignment: .trailing, spacing: 4) {
-            Text("Window clears in")
+            Text("Next drop")
               .font(.caption)
               .foregroundStyle(.secondary)
-            Text(timeToReset)
+            Text(nextDropIn)
+              .font(.system(.body, design: .monospaced).bold())
+          }
+          Spacer()
+          VStack(alignment: .trailing, spacing: 4) {
+            Text("Fully clear")
+              .font(.caption)
+              .foregroundStyle(.secondary)
+            Text(fullyClearIn)
               .font(.system(.body, design: .monospaced).bold())
           }
         }
@@ -196,6 +210,68 @@ private struct MetricRow: View {
       Text("\(Int(pct * 100))% of limit")
         .font(.caption2)
         .foregroundStyle(.secondary)
+    }
+  }
+}
+
+// MARK: - Token Time Series Chart
+
+private struct TokenTimeSeriesChart: View {
+  let buckets: [Int]
+  let color: Color
+
+  private var maxValue: Int { buckets.max() ?? 1 }
+
+  /// Format a bucket's token count for the tooltip.
+  private func formatTokens(_ t: Int) -> String {
+    t >= 1_000
+      ? String(format: "%.1fk", Double(t) / 1_000)
+      : "\(t)"
+  }
+
+  /// Label for the time axis — shows hours ago.
+  private func timeLabel(for index: Int) -> String {
+    let minutesAgo = (29 - index) * 10
+    let h = minutesAgo / 60
+    return minutesAgo == 0 ? "now" : "\(h)h"
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 6) {
+      Text("Output tokens · 5h")
+        .font(.subheadline)
+        .foregroundStyle(.secondary)
+
+      GeometryReader { geo in
+        let barWidth = (geo.size.width - CGFloat(buckets.count - 1)) / CGFloat(buckets.count)
+        let chartHeight = geo.size.height
+
+        HStack(alignment: .bottom, spacing: 1) {
+          ForEach(Array(buckets.enumerated()), id: \.offset) { index, value in
+            let fraction = maxValue > 0 ? CGFloat(value) / CGFloat(maxValue) : 0
+            RoundedRectangle(cornerRadius: 1.5)
+              .fill(value > 0 ? color.opacity(0.4 + 0.6 * Double(fraction)) : Color(hex: "#222222"))
+              .frame(width: barWidth, height: max(value > 0 ? 2 : 1, chartHeight * fraction))
+              .help("\(formatTokens(value)) tokens · \(timeLabel(for: index))")
+          }
+        }
+      }
+      .frame(height: 48)
+
+      // Time axis labels
+      HStack {
+        Text("5h ago")
+          .font(.system(size: 9))
+          .foregroundStyle(.quaternary)
+        Spacer()
+        Text("2.5h")
+          .font(.system(size: 9))
+          .foregroundStyle(.quaternary)
+        Spacer()
+        Text("now")
+          .font(.system(size: 9))
+          .foregroundStyle(.quaternary)
+      }
     }
   }
 }
