@@ -50,7 +50,11 @@ struct SettingsView: View {
       Section("Tidbyt Credentials") {
         SecureField("Tidbyt API Token", text: $tidbytToken)
         TextField("Tidbyt Device ID", text: $deviceID)
+        Text("These can be found in the Tidbyt app on your phone. Find them by tapping the ⚙️ icon -> Developer -> Get API key")
+          .font(.caption)
+          .foregroundStyle(.secondary)
       }
+      .padding()
 
       Section("Usage Limits") {
         Picker("Subscription Plan", selection: $selectedPlan) {
@@ -109,7 +113,7 @@ struct SettingsView: View {
         }
       }
     }
-    .padding()
+    .padding(16)
     .onAppear(perform: loadKeys)
   }
 

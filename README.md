@@ -40,7 +40,9 @@ Build and run in Xcode (Cmd+R). The app will appear in your menu bar.
 
 ### Download
 
-Check the [Releases](https://github.com/nsluke/Claudius/releases) page for pre-built binaries.
+Grab the `.dmg` from the [Releases](https://github.com/nsluke/Claudius/releases) page, open it, and drag Claudius to your Applications folder.
+
+> **Gatekeeper note:** Since the app is not notarized, macOS will block it on first launch. Right-click (or Control-click) the app and choose **Open**, then click **Open** in the dialog. You only need to do this once.
 
 ## Setup
 
