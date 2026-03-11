@@ -54,6 +54,8 @@ Check the [Releases](https://github.com/nsluke/Claudius/releases) page for pre-b
 
 ## How It Works
 
+Anthropic doesn't provide an API for tracking usage limits yet, so we've got to do some weird hacking to get around it.
+
 Claudius reads the JSONL session logs that Claude Code writes to `~/.claude/projects/`. For each assistant message within the last 5 hours, it extracts token usage (`input_tokens`, `output_tokens`, `cache_creation_input_tokens`) and groups messages by session.
 
 To avoid double-counting the growing conversation context sent with every API call, Claudius uses a **conversation-peak** strategy: for each active session, only the latest turn's token count is used (since it encompasses all prior context). The peaks are then summed across sessions.
