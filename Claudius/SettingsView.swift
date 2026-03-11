@@ -82,10 +82,10 @@ struct SettingsView: View {
             Text(plan.rawValue).tag(plan)
           }
         }
-        .onChange(of: selectedPlan) { newValue in
-          if newValue != .manual {
-            if let tl = newValue.tokenLimit { tokenLimit = "\(tl)" }
-            if let cl = newValue.costLimit  { costLimit = String(format: "%.2f", cl) }
+        .onChange(of: selectedPlan) {
+          if selectedPlan != .manual {
+            if let tl = selectedPlan.tokenLimit { tokenLimit = "\(tl)" }
+            if let cl = selectedPlan.costLimit  { costLimit = String(format: "%.2f", cl) }
           }
         }
 
