@@ -6,10 +6,14 @@ def main(config):
     usage_val = float(usage_str)
     tokens_val = int(config.get("tokens", "0"))
     tokens_str = str(int(tokens_val / 1000)) + "k" if tokens_val >= 1000 else str(tokens_val)
-    
+
     # Retrieve limits (you can pass these from Swift, or hardcode them here)
-    cost_limit = float(config.get("cost_limit", "7.10"))
-    token_limit = float(config.get("token_limit", "41653"))
+    cost_limit  = float(config.get("cost_limit",  "15.00"))   # override in Settings
+    token_limit = float(config.get("token_limit", "5000000")) # override in Settings
+
+    # Format limits for display
+    cost_limit_str = str(int(cost_limit)) if cost_limit == int(cost_limit) else str(cost_limit)
+    token_limit_str = str(int(token_limit / 1000)) + "k" if token_limit >= 1000 else str(int(token_limit))
 
     # Calculate percentages (clamp to 1.0 to prevent the box from expanding off-screen)
     cost_pct = usage_val / cost_limit if cost_limit > 0 else 0.0
@@ -41,7 +45,7 @@ def main(config):
                     expanded = True, # Pushes Cost to the left and $ value to the right
                     children = [
                         render.Text("Cost", font="tb-8", color=cost_color),
-                        render.Text("$" + usage_str, font="CG-pixel-3x5-mono", color="#fff"),
+                        render.Text("$" + usage_str + "/$" + cost_limit_str, font="CG-pixel-3x5-mono", color="#fff"),
                     ]
                 ),
                 # The Graphical Progress Bar
@@ -62,7 +66,7 @@ def main(config):
                     children = [
                         render.Text("Tkns", font="tb-8", color=token_color),
                         # Abbreviate large token numbers so they fit on screen (e.g. 19k)
-                        render.Text(tokens_str, font="CG-pixel-3x5-mono", color="#fff"),
+                        render.Text(tokens_str + "/" + token_limit_str, font="CG-pixel-3x5-mono", color="#fff"),
                     ]
                 ),
                 # The Graphical Progress Bar

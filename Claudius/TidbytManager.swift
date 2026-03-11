@@ -103,7 +103,7 @@ struct TidbytManager {
       return (0, 0)
     }
 
-    let today = Calendar.current.startOfDay(for: Date())
+    let windowStart = Date().addingTimeInterval(-5 * 60 * 60)
     let decoder = JSONDecoder()
 
     // Must include .withFractionalSeconds — timestamps are e.g. "2026-03-10T20:04:32.253Z"
@@ -123,14 +123,15 @@ struct TidbytManager {
               entry.type == "assistant",
               let ts = entry.timestamp,
               let date = iso.date(from: ts),
-              date >= today,
+              date >= windowStart,
               let usage = entry.message?.usage
         else { continue }
 
         totalCost   += Pricing.costUSD(for: usage, model: entry.message?.model)
+        // Only count uncached input + output tokens — these are what Claude Code's
+        // usage meter tracks. Cache read/creation tokens are served from cache and
+        // don't count toward the rate limit.
         totalTokens += (usage.input_tokens ?? 0)
-                     + (usage.cache_creation_input_tokens ?? 0)
-                     + (usage.cache_read_input_tokens ?? 0)
                      + (usage.output_tokens ?? 0)
       }
     }
@@ -173,14 +174,17 @@ struct TidbytManager {
         do {
           let render = Process()
           render.executableURL = URL(fileURLWithPath: pixletPath)
-          render.arguments = [
+          var args = [
             "render", starFilePath,
             "-o", outputPath,
             "usage=\(formattedUsage)",
             "tokens=\(tokens)",
-            "cost_limit=\(String(format: "%.2f", costLimit))",
-            "token_limit=\(tokenLimit)"
           ]
+          // Only pass limits when the user has configured them; otherwise
+          // let the .star file fall back to its own defaults.
+          if costLimit  > 0 { args.append("cost_limit=\(String(format: "%.2f", costLimit))") }
+          if tokenLimit > 0 { args.append("token_limit=\(tokenLimit)") }
+          render.arguments = args
           try render.run()
           render.waitUntilExit()
 

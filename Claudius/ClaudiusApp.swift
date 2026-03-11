@@ -59,42 +59,63 @@ class AppState: ObservableObject {
   }
 }
 
+// MARK: - Menu Content View
+
+struct MenuContent: View {
+  @EnvironmentObject var appState: AppState
+  @Environment(\.openWindow) private var openWindow
+
+  var body: some View {
+    Text("Cost: $\(appState.currentUsage.cost, specifier: "%.2f")")
+    Text("Tokens: \(appState.currentUsage.tokens)")
+
+    if let error = appState.lastError {
+      Text(error).foregroundStyle(.red)
+    }
+
+    if let lastSync = appState.lastSyncTime {
+      Text("Updated \(lastSync.formatted(.relative(presentation: .named)))")
+        .foregroundStyle(.secondary)
+    }
+
+    Divider()
+
+    Button("Dashboard") {
+      NSApp.activate(ignoringOtherApps: true)
+      openWindow(id: "usage")
+    }
+
+    Button(appState.isSyncing ? "Syncing…" : "Sync Now") {
+      appState.performSync()
+    }
+    .disabled(appState.isSyncing)
+
+    Divider()
+
+    SettingsLink { Text("Settings…") }
+
+    Divider()
+    Button("Quit") { NSApplication.shared.terminate(nil) }
+  }
+}
+
 // MARK: - Main App Scene
+
 @main
 struct ClaudeTidbytApp: App {
   @StateObject private var appState = AppState()
 
   var body: some Scene {
     MenuBarExtra(appState.isSyncing ? "Claude: …" : "Claude: $\(appState.currentUsage.cost, specifier: "%.2f")", systemImage: "terminal.fill") {
-      Text("Cost: $\(appState.currentUsage.cost, specifier: "%.2f")")
-      Text("Tokens: \(appState.currentUsage.tokens)")
-
-      if let error = appState.lastError {
-        Text(error)
-          .foregroundStyle(.red)
-      }
-
-      if let lastSync = appState.lastSyncTime {
-        Text("Last sync: \(lastSync.formatted(.relative(presentation: .named)))")
-          .foregroundStyle(.secondary)
-      }
-
-      Divider()
-
-      Button(appState.isSyncing ? "Syncing…" : "Sync Now") {
-        appState.performSync()
-      }
-      .disabled(appState.isSyncing)
-
-      Divider()
-
-      SettingsLink {
-        Text("Settings…")
-      }
-
-      Divider()
-      Button("Quit") { NSApplication.shared.terminate(nil) }
+      MenuContent()
+        .environmentObject(appState)
     }
+
+    Window("Claude Usage", id: "usage") {
+      UsageView()
+        .environmentObject(appState)
+    }
+    .windowResizability(.contentSize)
 
     Settings {
       SettingsView(currentUsage: $appState.currentUsage)
