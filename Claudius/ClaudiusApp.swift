@@ -10,7 +10,7 @@ import Combine
 
 // MARK: - App State Manager
 class AppState: ObservableObject {
-  @Published var currentUsage: (cost: Double, tokens: Int) = (0.0, 0)
+  @Published var currentUsage: UsageStats = UsageStats()
   @Published var isSyncing: Bool = false
   @Published var lastSyncTime: Date? = nil
   @Published var lastError: String? = nil
@@ -68,6 +68,7 @@ struct MenuContent: View {
   var body: some View {
     Text("Cost: $\(appState.currentUsage.cost, specifier: "%.2f")")
     Text("Tokens: \(appState.currentUsage.tokens)")
+    Text("Messages: \(appState.currentUsage.messages)")
 
     if let error = appState.lastError {
       Text(error).foregroundStyle(.red)

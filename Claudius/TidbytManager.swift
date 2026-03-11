@@ -12,6 +12,8 @@ import Foundation
 private struct SessionEntry: Decodable {
   let type: String
   let timestamp: String?
+  let uuid: String?
+  let sessionId: String?
   let message: AssistantMessage?
 }
 
@@ -62,7 +64,7 @@ struct TidbytManager {
 
   // MARK: Public entry point
 
-  static func fetchAndPush() async -> (cost: Double, tokens: Int)? {
+  static func fetchAndPush() async -> UsageStats? {
     guard
       let tidbytToken = KeychainHelper.shared.read(service: "ClaudeTidbyt", account: "TidbytToken"),
       let deviceID    = UserDefaults.standard.string(forKey: "TidbytDeviceID"),
@@ -72,24 +74,24 @@ struct TidbytManager {
       return nil
     }
 
-    let (cost, tokens) = readTodayUsage()
-    print("Claudius: today = $\(String(format: "%.4f", cost)), \(tokens) tokens")
+    let stats = readTodayUsage()
+    print("Claudius: today = $\(String(format: "%.4f", stats.cost)), \(stats.tokens) tokens, \(stats.messages) messages")
 
     let costLimit  = UserDefaults.standard.double(forKey: "CostLimit")
     let tokenLimit = UserDefaults.standard.integer(forKey: "TokenLimit")
 
-    let pushed = await runPixlet(usage: cost, tokens: tokens, token: tidbytToken, deviceID: deviceID,
+    let pushed = await runPixlet(usage: stats.cost, tokens: stats.tokens, token: tidbytToken, deviceID: deviceID,
                                  costLimit: costLimit, tokenLimit: tokenLimit)
     guard pushed else { return nil }
 
-    return (cost, tokens)
+    return stats
   }
 
   // MARK: - Local log parsing
 
   /// Walks every JSONL file under ~/.claude/projects/, sums token usage
   /// for assistant turns whose timestamp falls on today (local calendar).
-  static func readTodayUsage() -> (cost: Double, tokens: Int) {
+  static func readTodayUsage() -> UsageStats {
     let fm = FileManager.default
     let home = fm.homeDirectoryForCurrentUser
     let projectsDir = home.appendingPathComponent(".claude/projects")
@@ -100,7 +102,7 @@ struct TidbytManager {
       options: []   // do NOT skip hidden files — .claude is a dotfile directory
     ) else {
       print("Claudius: cannot enumerate \(projectsDir.path)")
-      return (0, 0)
+      return UsageStats()
     }
 
     let windowStart = Date().addingTimeInterval(-5 * 60 * 60)
@@ -110,14 +112,17 @@ struct TidbytManager {
     let iso = ISO8601DateFormatter()
     iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
 
-    var totalCost:   Double = 0
-    var totalTokens: Int    = 0
+    var stats = UsageStats()
+    
+    // Group turns by conversation to find the "peak" usage of each active thread.
+    // This prevents double-counting the growing history sent in every turn.
+    var conversationPeaks: [String: (cost: Double, tokens: Int, date: Date)] = [:]
 
     for case let fileURL as URL in projectEnum {
       guard fileURL.pathExtension == "jsonl" else { continue }
       guard let lines = try? String(contentsOf: fileURL, encoding: .utf8) else { continue }
 
-      for line in lines.split(separator: "\n", omittingEmptySubsequences: true) {
+      lines.enumerateLines { line, _ in
         guard let data = line.data(using: .utf8),
               let entry = try? decoder.decode(SessionEntry.self, from: data),
               entry.type == "assistant",
@@ -125,18 +130,40 @@ struct TidbytManager {
               let date = iso.date(from: ts),
               date >= windowStart,
               let usage = entry.message?.usage
-        else { continue }
+        else { return }
 
-        totalCost   += Pricing.costUSD(for: usage, model: entry.message?.model)
-        // Only count uncached input + output tokens — these are what Claude Code's
-        // usage meter tracks. Cache read/creation tokens are served from cache and
-        // don't count toward the rate limit.
-        totalTokens += (usage.input_tokens ?? 0)
-                     + (usage.output_tokens ?? 0)
+        // sessionId groups all messages in a single Claude Code conversation.
+        let convId = entry.sessionId ?? entry.uuid ?? ts
+        
+        let currentCost = Pricing.costUSD(for: usage, model: entry.message?.model)
+        let currentTokens = (usage.input_tokens ?? 0) 
+                          + (usage.output_tokens ?? 0)
+                          + (usage.cache_creation_input_tokens ?? 0)
+
+        // For each conversation, we only keep the LATEST (most complete) turn's token count,
+        // as that count includes all previous turns in that thread.
+        if let existing = conversationPeaks[convId] {
+          if date > existing.date {
+            conversationPeaks[convId] = (currentCost, currentTokens, date)
+          }
+        } else {
+          conversationPeaks[convId] = (currentCost, currentTokens, date)
+          stats.messages += 1 // Count unique threads/starts
+        }
+        
+        if stats.oldestMessageDate == nil || date < stats.oldestMessageDate! {
+            stats.oldestMessageDate = date
+        }
       }
     }
 
-    return (totalCost, totalTokens)
+    // Final sum is the total of all the "peaks" of conversations active in the window.
+    for peak in conversationPeaks.values {
+      stats.cost += peak.cost
+      stats.tokens += peak.tokens
+    }
+
+    return stats
   }
 
   // MARK: - Pixlet rendering & push

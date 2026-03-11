@@ -13,11 +13,11 @@ struct UsageView: View {
   // Mirror the star file fallback defaults.
   private var costLimit: Double {
     let v = UserDefaults.standard.double(forKey: "CostLimit")
-    return v > 0 ? v : 15.0
+    return v > 0 ? v : 5.0
   }
   private var tokenLimit: Int {
     let v = UserDefaults.standard.integer(forKey: "TokenLimit")
-    return v > 0 ? v : 5_000_000
+    return v > 0 ? v : 44_000
   }
 
   private var costPct:  Double { min(appState.currentUsage.cost / costLimit, 1.0) }
@@ -35,6 +35,27 @@ struct UsageView: View {
         : "\(t)"
   }
 
+  private var timeToReset: String {
+    guard let oldest = appState.currentUsage.oldestMessageDate else {
+      return "N/A"
+    }
+    let expirationDate = oldest.addingTimeInterval(5 * 60 * 60)
+    let timeInterval = expirationDate.timeIntervalSinceNow
+    
+    if timeInterval <= 0 {
+      return "Now"
+    }
+    
+    let hours = Int(timeInterval) / 3600
+    let minutes = Int(timeInterval) / 60 % 60
+    
+    if hours > 0 {
+        return "\(hours)h \(minutes)m"
+    } else {
+        return "\(minutes)m"
+    }
+  }
+
   var body: some View {
     VStack(spacing: 0) {
       // Header
@@ -44,6 +65,13 @@ struct UsageView: View {
         Text("Claude Code · 5h window")
           .font(.headline)
         Spacer()
+        
+        SettingsLink {
+          Image(systemName: "gearshape")
+        }
+        .buttonStyle(.plain)
+        .help("Settings")
+
         Button {
           appState.performSync()
         } label: {
@@ -78,6 +106,25 @@ struct UsageView: View {
           pct: tokenPct,
           color: tokenColor
         )
+
+        HStack {
+          VStack(alignment: .leading, spacing: 4) {
+            Text("Messages")
+              .font(.caption)
+              .foregroundStyle(.secondary)
+            Text("\(appState.currentUsage.messages)")
+              .font(.system(.body, design: .monospaced).bold())
+          }
+          Spacer()
+          VStack(alignment: .trailing, spacing: 4) {
+            Text("Window clears in")
+              .font(.caption)
+              .foregroundStyle(.secondary)
+            Text(timeToReset)
+              .font(.system(.body, design: .monospaced).bold())
+          }
+        }
+        .padding(.top, 8)
       }
       .padding(20)
 
