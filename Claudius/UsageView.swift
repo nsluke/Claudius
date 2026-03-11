@@ -133,11 +133,11 @@ struct UsageView: View {
       // Footer
       HStack {
         if let lastSync = appState.lastSyncTime {
-          Text("Updated \(lastSync.formatted(.relative(presentation: .named)))")
+          Text("Synced \(lastSync.formatted(.relative(presentation: .named)))")
             .font(.caption)
             .foregroundStyle(.secondary)
         } else {
-          Text("Not yet synced")
+          Text("Reading local logs")
             .font(.caption)
             .foregroundStyle(.secondary)
         }

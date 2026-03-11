@@ -65,9 +65,26 @@ struct MenuContent: View {
   @EnvironmentObject var appState: AppState
   @Environment(\.openWindow) private var openWindow
 
+  private var costLimit: Double {
+    let v = UserDefaults.standard.double(forKey: "CostLimit")
+    return v > 0 ? v : 5.0
+  }
+  private var tokenLimit: Int {
+    let v = UserDefaults.standard.integer(forKey: "TokenLimit")
+    return v > 0 ? v : 44_000
+  }
+
+  private func formatTokens(_ t: Int) -> String {
+    t >= 1_000_000
+      ? String(format: "%.1fM", Double(t) / 1_000_000)
+      : t >= 1_000
+        ? String(format: "%.1fk", Double(t) / 1_000)
+        : "\(t)"
+  }
+
   var body: some View {
-    Text("Cost: $\(appState.currentUsage.cost, specifier: "%.2f")")
-    Text("Tokens: \(appState.currentUsage.tokens)")
+    Text("Cost: $\(appState.currentUsage.cost, specifier: "%.2f") / $\(costLimit, specifier: "%.2f")")
+    Text("Tokens: \(formatTokens(appState.currentUsage.tokens)) / \(formatTokens(tokenLimit))")
     Text("Messages: \(appState.currentUsage.messages)")
 
     if let error = appState.lastError {
@@ -85,25 +102,29 @@ struct MenuContent: View {
       NSApp.activate(ignoringOtherApps: true)
       openWindow(id: "usage")
     }
+    .keyboardShortcut("d")
 
     Button(appState.isSyncing ? "Syncing…" : "Sync Now") {
       appState.performSync()
     }
+    .keyboardShortcut("r")
     .disabled(appState.isSyncing)
 
     Divider()
 
     SettingsLink { Text("Settings…") }
+      .keyboardShortcut(",")
 
     Divider()
     Button("Quit") { NSApplication.shared.terminate(nil) }
+      .keyboardShortcut("q")
   }
 }
 
 // MARK: - Main App Scene
 
 @main
-struct ClaudeTidbytApp: App {
+struct ClaudiusApp: App {
   @StateObject private var appState = AppState()
 
   var body: some Scene {
@@ -120,7 +141,7 @@ struct ClaudeTidbytApp: App {
 
     Settings {
       SettingsView(currentUsage: $appState.currentUsage)
-        .frame(width: 420, height: 320)
+        .frame(width: 420)
     }
   }
 }

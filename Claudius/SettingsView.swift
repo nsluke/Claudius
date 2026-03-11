@@ -47,14 +47,34 @@ struct SettingsView: View {
 
   var body: some View {
     Form {
-      Section("Tidbyt Credentials") {
+      Section("Tidbyt Credentials (optional)") {
         SecureField("Tidbyt API Token", text: $tidbytToken)
         TextField("Tidbyt Device ID", text: $deviceID)
         Text("These can be found in the Tidbyt app on your phone. Find them by tapping the ⚙️ icon -> Developer -> Get API key")
           .font(.caption)
           .foregroundStyle(.secondary)
       }
-      .padding()
+
+      Section {
+        HStack {
+          Button("Save") {
+            saveSettings()
+          }
+
+          Button(isSyncing ? "Syncing…" : "Push to Tidbyt") {
+            saveAndPush()
+          }
+          .disabled(isSyncing || tidbytToken.isEmpty || deviceID.isEmpty)
+
+          Spacer()
+
+          if !statusMessage.isEmpty {
+            Text(statusMessage)
+              .foregroundStyle(statusMessage.hasPrefix("✓") ? .green : .red)
+              .font(.caption)
+          }
+        }
+      }
 
       Section("Usage Limits") {
         Picker("Subscription Plan", selection: $selectedPlan) {
@@ -81,39 +101,26 @@ struct SettingsView: View {
         }
       }
 
-      Section("Local Usage Source") {
+      Section("Current Window") {
         LabeledContent("Log directory") {
           Text("~/.claude/projects/")
             .font(.caption)
             .foregroundStyle(.secondary)
         }
-        LabeledContent("Today's cost") {
+        LabeledContent("Cost") {
           Text("$\(currentUsage.cost, specifier: "%.4f")")
         }
-        LabeledContent("Today's tokens") {
+        LabeledContent("Tokens") {
           Text("\(currentUsage.tokens)")
         }
-        LabeledContent("Today's messages") {
+        LabeledContent("Messages") {
           Text("\(currentUsage.messages)")
         }
       }
 
-      Section {
-        HStack {
-          Button(isSyncing ? "Syncing…" : "Save & Sync Now") {
-            saveAndPush()
-          }
-          .disabled(isSyncing || tidbytToken.isEmpty || deviceID.isEmpty)
 
-          if !statusMessage.isEmpty {
-            Text(statusMessage)
-              .foregroundStyle(statusMessage.hasPrefix("✓") ? .green : .red)
-              .font(.caption)
-          }
-        }
-      }
     }
-    .padding(16)
+    .formStyle(.grouped)
     .onAppear(perform: loadKeys)
   }
 
@@ -132,10 +139,7 @@ struct SettingsView: View {
     tokenLimit  = tl > 0 ? "\(tl)" : ""
   }
 
-  private func saveAndPush() {
-    isSyncing = true
-    statusMessage = ""
-
+  private func saveSettings() {
     if let tData = tidbytToken.data(using: .utf8) {
       KeychainHelper.shared.save(tData, service: "ClaudeTidbyt", account: "TidbytToken")
     }
@@ -143,6 +147,13 @@ struct SettingsView: View {
     UserDefaults.standard.set(selectedPlan.rawValue, forKey: "ClaudePlan")
     if let cl = Double(costLimit)  { UserDefaults.standard.set(cl,  forKey: "CostLimit") }
     if let tl = Int(tokenLimit)    { UserDefaults.standard.set(tl,  forKey: "TokenLimit") }
+    statusMessage = "✓ Saved"
+  }
+
+  private func saveAndPush() {
+    saveSettings()
+    isSyncing = true
+    statusMessage = ""
 
     Task {
       let newUsage = await TidbytManager.fetchAndPush()
@@ -151,7 +162,7 @@ struct SettingsView: View {
           currentUsage  = newUsage
           statusMessage = "✓ Pushed to Tidbyt"
         } else {
-          statusMessage = "✗ Sync failed — check Tidbyt token & device ID"
+          statusMessage = "✗ Push failed — check Tidbyt token & device ID"
         }
         isSyncing = false
       }
