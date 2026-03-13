@@ -16,7 +16,8 @@ class KeychainHelper {
       kSecValueData: data,
       kSecClass: kSecClassGenericPassword,
       kSecAttrService: service,
-      kSecAttrAccount: account
+      kSecAttrAccount: account,
+      kSecAttrAccessible: kSecAttrAccessibleAfterFirstUnlock
     ] as CFDictionary
 
     SecItemDelete(query) // Clear existing

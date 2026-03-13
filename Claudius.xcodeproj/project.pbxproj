@@ -6,8 +6,19 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXContainerItemProxy section */
+		A3E071082F60BB10003EF4CD /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A3E0703A2F60AA10003EF4CD /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A3E070412F60AA10003EF4CD;
+			remoteInfo = Claudius;
+		};
+/* End PBXContainerItemProxy section */
+
 /* Begin PBXFileReference section */
 		A3E070422F60AA10003EF4CD /* Claudius.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Claudius.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A3E071012F60BB10003EF4CD /* ClaudiusTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ClaudiusTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -16,10 +27,22 @@
 			path = Claudius;
 			sourceTree = "<group>";
 		};
+		A3E071022F60BB10003EF4CD /* ClaudiusTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = ClaudiusTests;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		A3E0703F2F60AA10003EF4CD /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A3E071042F60BB10003EF4CD /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -33,6 +56,7 @@
 			isa = PBXGroup;
 			children = (
 				A3E070442F60AA10003EF4CD /* Claudius */,
+				A3E071022F60BB10003EF4CD /* ClaudiusTests */,
 				A3E070432F60AA10003EF4CD /* Products */,
 			);
 			sourceTree = "<group>";
@@ -41,6 +65,7 @@
 			isa = PBXGroup;
 			children = (
 				A3E070422F60AA10003EF4CD /* Claudius.app */,
+				A3E071012F60BB10003EF4CD /* ClaudiusTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -70,6 +95,29 @@
 			productReference = A3E070422F60AA10003EF4CD /* Claudius.app */;
 			productType = "com.apple.product-type.application";
 		};
+		A3E071062F60BB10003EF4CD /* ClaudiusTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A3E0710B2F60BB10003EF4CD /* Build configuration list for PBXNativeTarget "ClaudiusTests" */;
+			buildPhases = (
+				A3E071032F60BB10003EF4CD /* Sources */,
+				A3E071042F60BB10003EF4CD /* Frameworks */,
+				A3E071052F60BB10003EF4CD /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				A3E071072F60BB10003EF4CD /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				A3E071022F60BB10003EF4CD /* ClaudiusTests */,
+			);
+			name = ClaudiusTests;
+			packageProductDependencies = (
+			);
+			productName = ClaudiusTests;
+			productReference = A3E071012F60BB10003EF4CD /* ClaudiusTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -82,6 +130,10 @@
 				TargetAttributes = {
 					A3E070412F60AA10003EF4CD = {
 						CreatedOnToolsVersion = 26.3;
+					};
+					A3E071062F60BB10003EF4CD = {
+						CreatedOnToolsVersion = 26.3;
+						TestTargetID = A3E070412F60AA10003EF4CD;
 					};
 				};
 			};
@@ -100,6 +152,7 @@
 			projectRoot = "";
 			targets = (
 				A3E070412F60AA10003EF4CD /* Claudius */,
+				A3E071062F60BB10003EF4CD /* ClaudiusTests */,
 			);
 		};
 /* End PBXProject section */
@@ -112,10 +165,32 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		A3E071052F60BB10003EF4CD /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		A3E071072F60BB10003EF4CD /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = A3E070412F60AA10003EF4CD /* Claudius */;
+			targetProxy = A3E071082F60BB10003EF4CD /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin PBXSourcesBuildPhase section */
 		A3E0703E2F60AA10003EF4CD /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A3E071032F60BB10003EF4CD /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -250,11 +325,12 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "-";
+				CODE_SIGN_IDENTITY = "Apple Development";
+				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = 6TK8Q4KD6G;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
@@ -267,6 +343,7 @@
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.claudius.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "";
 				REGISTER_APP_GROUPS = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
@@ -282,11 +359,12 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "-";
+				CODE_SIGN_IDENTITY = "Apple Development";
+				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = 6TK8Q4KD6G;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
@@ -299,6 +377,7 @@
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.claudius.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "";
 				REGISTER_APP_GROUPS = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
@@ -306,6 +385,44 @@
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		A3E071092F60BB10003EF4CD /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 6TK8Q4KD6G;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.claudius.app.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Claudius.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Claudius";
+			};
+			name = Debug;
+		};
+		A3E0710A2F60BB10003EF4CD /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 6TK8Q4KD6G;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.claudius.app.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Claudius.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Claudius";
 			};
 			name = Release;
 		};
@@ -326,6 +443,15 @@
 			buildConfigurations = (
 				A3E0704E2F60AA10003EF4CD /* Debug */,
 				A3E0704F2F60AA10003EF4CD /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A3E0710B2F60BB10003EF4CD /* Build configuration list for PBXNativeTarget "ClaudiusTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A3E071092F60BB10003EF4CD /* Debug */,
+				A3E0710A2F60BB10003EF4CD /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

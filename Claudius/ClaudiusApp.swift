@@ -16,6 +16,7 @@ class AppState: ObservableObject {
   @Published var lastError: String? = nil
 
   private var timerCancellable: AnyCancellable?
+  private var lastPushedTokens: Int = 0
 
   init() {
     // Show real local numbers immediately, without requiring Tidbyt credentials.
@@ -23,37 +24,50 @@ class AppState: ObservableObject {
     currentUsage = local
 
     // Then attempt a full push in the background.
-    performSync()
+    performSync(force: true)
 
     timerCancellable = Timer.publish(every: 900, on: .main, in: .common)
       .autoconnect()
-      .sink { [weak self] _ in self?.performSync() }
+      .sink { [weak self] _ in self?.performSync(force: false) }
   }
 
   /// Reads local JSONL files and pushes to Tidbyt.
   /// A missing Tidbyt token is a silent no-op (no error shown).
-  func performSync() {
+  func performSync(force: Bool = false) {
     guard !isSyncing else { return }
     isSyncing = true
     lastError = nil
 
     Task {
-      let result = await TidbytManager.fetchAndPush()
-      await MainActor.run {
-        if let result {
-          self.currentUsage = result
-          self.lastSyncTime = Date()
-        } else {
-          // Refresh local data even when push fails.
-          self.currentUsage = TidbytManager.readTodayUsage()
-          let hasCredentials =
-            KeychainHelper.shared.read(service: "ClaudeTidbyt", account: "TidbytToken") != nil &&
-            UserDefaults.standard.string(forKey: "TidbytDeviceID") != nil
-          if hasCredentials {
-            self.lastError = "Push failed — check Tidbyt credentials"
+      let stats = TidbytManager.readTodayUsage()
+      
+      let tokenDiff = abs(stats.tokens - self.lastPushedTokens)
+      let percentChange = self.lastPushedTokens == 0 ? 1.0 : Double(tokenDiff) / Double(self.lastPushedTokens)
+      
+      let shouldPush = force || percentChange > 0.01
+
+      if shouldPush {
+        let pushed = await TidbytManager.push(stats: stats)
+        await MainActor.run {
+          self.currentUsage = stats
+          if pushed {
+            self.lastSyncTime = Date()
+            self.lastPushedTokens = stats.tokens
+          } else {
+            let hasCredentials =
+              KeychainHelper.shared.read(service: "ClaudeTidbyt", account: "TidbytToken") != nil &&
+              UserDefaults.standard.string(forKey: "TidbytDeviceID") != nil
+            if hasCredentials {
+              self.lastError = "Push failed — check Tidbyt credentials"
+            }
           }
+          self.isSyncing = false
         }
-        self.isSyncing = false
+      } else {
+        await MainActor.run {
+          self.currentUsage = stats
+          self.isSyncing = false
+        }
       }
     }
   }
@@ -105,7 +119,7 @@ struct MenuContent: View {
     .keyboardShortcut("d")
 
     Button(appState.isSyncing ? "Syncing…" : "Sync Now") {
-      appState.performSync()
+      appState.performSync(force: true)
     }
     .keyboardShortcut("r")
     .disabled(appState.isSyncing)
@@ -127,10 +141,35 @@ struct MenuContent: View {
 struct ClaudiusApp: App {
   @StateObject private var appState = AppState()
 
+  private var costLimit: Double {
+    let v = UserDefaults.standard.double(forKey: "CostLimit")
+    return v > 0 ? v : 5.0
+  }
+  
+  private var usageColor: Color {
+    let pct = min(appState.currentUsage.cost / costLimit, 1.0)
+    if pct < 0.75 { return .green }
+    if pct < 0.90 { return .yellow }
+    return .red
+  }
+
+  private var tokenLimit: Int {
+    let v = UserDefaults.standard.integer(forKey: "TokenLimit")
+    return v > 0 ? v : 44_000
+  }
+
   var body: some Scene {
-    MenuBarExtra(appState.isSyncing ? "Claude: …" : "Claude: $\(appState.currentUsage.cost, specifier: "%.2f")", systemImage: "terminal.fill") {
+    MenuBarExtra {
       MenuContent()
         .environmentObject(appState)
+    } label: {
+      let pct = tokenLimit > 0 ? Int(Double(appState.currentUsage.tokens) / Double(tokenLimit) * 100) : 0
+      let usageText = appState.isSyncing ? "…" : "\(pct)%"
+//      HStack {
+//        Image(systemName: "laurel.leading")
+        Text( "􁊘 \(usageText) 􁊙")
+          .foregroundStyle(usageColor)
+//      }
     }
 
     Window("Claude Usage", id: "usage") {

@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import Charts
 
 struct UsageView: View {
   @EnvironmentObject var appState: AppState
@@ -69,7 +70,7 @@ struct UsageView: View {
         .help("Settings")
 
         Button {
-          appState.performSync()
+          appState.performSync(force: true)
         } label: {
           Image(systemName: appState.isSyncing ? "arrow.trianglehead.2.clockwise" : "arrow.clockwise")
         }
@@ -220,8 +221,6 @@ private struct TokenTimeSeriesChart: View {
   let buckets: [Int]
   let color: Color
 
-  private var maxValue: Int { buckets.max() ?? 1 }
-
   /// Format a bucket's token count for the tooltip.
   private func formatTokens(_ t: Int) -> String {
     t >= 1_000
@@ -233,7 +232,17 @@ private struct TokenTimeSeriesChart: View {
   private func timeLabel(for index: Int) -> String {
     let minutesAgo = (29 - index) * 10
     let h = minutesAgo / 60
-    return minutesAgo == 0 ? "now" : "\(h)h"
+    return minutesAgo == 0 ? "now" : "\(h)h ago"
+  }
+  
+  struct ChartData: Identifiable {
+    let index: Int
+    let tokens: Int
+    var id: Int { index }
+  }
+  
+  var chartData: [ChartData] {
+    buckets.enumerated().map { ChartData(index: $0.offset, tokens: $0.element) }
   }
 
   var body: some View {
@@ -242,36 +251,31 @@ private struct TokenTimeSeriesChart: View {
         .font(.subheadline)
         .foregroundStyle(.secondary)
 
-      GeometryReader { geo in
-        let barWidth = (geo.size.width - CGFloat(buckets.count - 1)) / CGFloat(buckets.count)
-        let chartHeight = geo.size.height
-
-        HStack(alignment: .bottom, spacing: 1) {
-          ForEach(Array(buckets.enumerated()), id: \.offset) { index, value in
-            let fraction = maxValue > 0 ? CGFloat(value) / CGFloat(maxValue) : 0
-            RoundedRectangle(cornerRadius: 1.5)
-              .fill(value > 0 ? color.opacity(0.4 + 0.6 * Double(fraction)) : Color(hex: "#222222"))
-              .frame(width: barWidth, height: max(value > 0 ? 2 : 1, chartHeight * fraction))
-              .help("\(formatTokens(value)) tokens · \(timeLabel(for: index))")
+      Chart(chartData) { data in
+        BarMark(
+          x: .value("Time", data.index),
+          y: .value("Tokens", data.tokens)
+        )
+        .foregroundStyle(color.gradient)
+        .cornerRadius(1.5)
+      }
+      .chartXAxis {
+        AxisMarks(values: [0, 14, 29]) { value in
+          if let index = value.as(Int.self) {
+            AxisValueLabel {
+              if index == 0 {
+                Text("5h ago").font(.system(size: 9)).foregroundStyle(.quaternary)
+              } else if index == 14 {
+                Text("2.5h").font(.system(size: 9)).foregroundStyle(.quaternary)
+              } else if index == 29 {
+                Text("now").font(.system(size: 9)).foregroundStyle(.quaternary)
+              }
+            }
           }
         }
       }
-      .frame(height: 48)
-
-      // Time axis labels
-      HStack {
-        Text("5h ago")
-          .font(.system(size: 9))
-          .foregroundStyle(.quaternary)
-        Spacer()
-        Text("2.5h")
-          .font(.system(size: 9))
-          .foregroundStyle(.quaternary)
-        Spacer()
-        Text("now")
-          .font(.system(size: 9))
-          .foregroundStyle(.quaternary)
-      }
+      .chartYAxis(.hidden)
+      .frame(height: 60)
     }
   }
 }

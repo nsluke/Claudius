@@ -9,6 +9,6 @@ struct UsageStats {
 
   /// 30 buckets — each represents 10 minutes of the 5-hour window.
   /// Index 0 is the oldest slot (5h ago), index 29 is the most recent.
-  /// Values are output tokens generated during that interval.
+  /// Values are total tokens (input + output) during that interval.
   var tokenTimeSeries: [Int] = Array(repeating: 0, count: 30)
 }

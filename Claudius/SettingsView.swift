@@ -15,21 +15,41 @@ enum ClaudePlan: String, CaseIterable, Identifiable {
   
   var id: String { self.rawValue }
   
+  /// Token limits per 5-hour window (input + output only).
+  /// Matches claude-code-usage-monitor's PLAN_LIMITS.
   var tokenLimit: Int? {
     switch self {
-    case .pro:    return 44_000
+    case .pro:    return 19_000
     case .max5x:  return 88_000
     case .max20x: return 220_000
     case .manual: return nil
     }
   }
-  
+
+  /// Cost limits per 5-hour window (USD).
+  /// Matches claude-code-usage-monitor's PLAN_LIMITS.
   var costLimit: Double? {
     switch self {
-    case .pro:    return 5.00
-    case .max5x:  return 25.00
-    case .max20x: return 100.00
+    case .pro:    return 18.00
+    case .max5x:  return 35.00
+    case .max20x: return 140.00
     case .manual: return nil
+    }
+  }
+}
+
+enum TidbytLayout: String, CaseIterable, Identifiable {
+  case defaultLayout = "Default"
+  case minimal = "Minimal"
+  case graph = "Graph"
+  
+  var id: String { self.rawValue }
+  
+  var starFile: String {
+    switch self {
+    case .defaultLayout: return "claude_usage"
+    case .minimal:       return "claude_minimal"
+    case .graph:         return "claude_graph"
     }
   }
 }
@@ -39,6 +59,7 @@ struct SettingsView: View {
 
   @State private var tidbytToken: String = ""
   @State private var deviceID: String = ""
+  @State private var selectedLayout: TidbytLayout = .defaultLayout
   @State private var costLimit: String = ""
   @State private var tokenLimit: String = ""
   @State private var selectedPlan: ClaudePlan = .manual
@@ -50,7 +71,14 @@ struct SettingsView: View {
       Section("Tidbyt Credentials (optional)") {
         SecureField("Tidbyt API Token", text: $tidbytToken)
         TextField("Tidbyt Device ID", text: $deviceID)
-        Text("These can be found in the Tidbyt app on your phone. Find them by tapping the ⚙️ icon -> Developer -> Get API key")
+        
+        Picker("Tidbyt Layout", selection: $selectedLayout) {
+          ForEach(TidbytLayout.allCases) { layout in
+            Text(layout.rawValue).tag(layout)
+          }
+        }
+        
+        Text("Device IDs can be found in the Tidbyt app on your phone. Find them by tapping the ⚙️ icon -> Developer -> Get API key")
           .font(.caption)
           .foregroundStyle(.secondary)
       }
@@ -128,6 +156,11 @@ struct SettingsView: View {
     tidbytToken = KeychainHelper.shared.read(service: "ClaudeTidbyt", account: "TidbytToken") ?? ""
     deviceID    = UserDefaults.standard.string(forKey: "TidbytDeviceID") ?? ""
     
+    if let layoutRaw = UserDefaults.standard.string(forKey: "TidbytLayout"),
+       let layout = TidbytLayout(rawValue: layoutRaw) {
+      selectedLayout = layout
+    }
+    
     if let planRaw = UserDefaults.standard.string(forKey: "ClaudePlan"),
        let plan = ClaudePlan(rawValue: planRaw) {
       selectedPlan = plan
@@ -144,6 +177,7 @@ struct SettingsView: View {
       KeychainHelper.shared.save(tData, service: "ClaudeTidbyt", account: "TidbytToken")
     }
     UserDefaults.standard.set(deviceID, forKey: "TidbytDeviceID")
+    UserDefaults.standard.set(selectedLayout.rawValue, forKey: "TidbytLayout")
     UserDefaults.standard.set(selectedPlan.rawValue, forKey: "ClaudePlan")
     if let cl = Double(costLimit)  { UserDefaults.standard.set(cl,  forKey: "CostLimit") }
     if let tl = Int(tokenLimit)    { UserDefaults.standard.set(tl,  forKey: "TokenLimit") }
@@ -156,10 +190,11 @@ struct SettingsView: View {
     statusMessage = ""
 
     Task {
-      let newUsage = await TidbytManager.fetchAndPush()
+      let stats = TidbytManager.readTodayUsage()
+      let pushed = await TidbytManager.push(stats: stats)
       await MainActor.run {
-        if let newUsage {
-          currentUsage  = newUsage
+        currentUsage = stats
+        if pushed {
           statusMessage = "✓ Pushed to Tidbyt"
         } else {
           statusMessage = "✗ Push failed — check Tidbyt token & device ID"
