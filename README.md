@@ -2,14 +2,9 @@
 
 A macOS menu bar app that tracks your [Claude Code](https://docs.anthropic.com/en/docs/claude-code) usage in real time with optional [Tidbyt](https://tidbyt.com) display integration.
 
-#### Menu Bar
-![Menu Bar](Claudius/screenshots/menu.png)
-
-#### Dashboard
-![Dashboard](Claudius/screenshots/dashboard.png)
-
-#### Tidbyt
-![Tidbyt](Claudius/screenshots/tidbyt.jpg)
+| Menu Bar | Dashboard | Tidbyt |
+|----------|-----------|--------|
+| <img src="Claudius/screenshots/menu.png" alt="Menu Bar" width="250"> | <img src="Claudius/screenshots/dashboard.png" alt="Dashboard" width="250"> | <img src="Claudius/screenshots/tidbyt.jpg" alt="Tidbyt" width="250"> |
 
 ## Features
 
