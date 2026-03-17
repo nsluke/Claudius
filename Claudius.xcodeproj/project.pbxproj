@@ -174,14 +174,6 @@
 		};
 /* End PBXResourcesBuildPhase section */
 
-/* Begin PBXTargetDependency section */
-		A3E071072F60BB10003EF4CD /* PBXTargetDependency */ = {
-			isa = PBXTargetDependency;
-			target = A3E070412F60AA10003EF4CD /* Claudius */;
-			targetProxy = A3E071082F60BB10003EF4CD /* PBXContainerItemProxy */;
-		};
-/* End PBXTargetDependency section */
-
 /* Begin PBXSourcesBuildPhase section */
 		A3E0703E2F60AA10003EF4CD /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
@@ -198,6 +190,14 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		A3E071072F60BB10003EF4CD /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = A3E070412F60AA10003EF4CD /* Claudius */;
+			targetProxy = A3E071082F60BB10003EF4CD /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		A3E0704B2F60AA10003EF4CD /* Debug */ = {

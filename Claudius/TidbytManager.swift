@@ -123,11 +123,9 @@ struct TidbytManager {
 
     let deviceIDs = deviceIDString.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
 
-    print("Claudius: today = $\(String(format: "%.4f", stats.cost)), \(stats.tokens) tokens, \(stats.messages) messages")
-
     let costLimit  = UserDefaults.standard.double(forKey: "CostLimit")
     let tokenLimit = UserDefaults.standard.integer(forKey: "TokenLimit")
-    
+
     let layout = UserDefaults.standard.string(forKey: "TidbytLayout") ?? "Default"
     let starFileName = {
         switch layout {
@@ -136,11 +134,29 @@ struct TidbytManager {
         default: return "claude_usage"
         }
     }()
-    
+
+    // Build pixlet args based on data source
+    var pixletArgs: [String] = []
+
+    if let sessionPct = stats.fiveHourUtilization {
+      // Web mode: pass utilization percentages
+      pixletArgs.append("session_pct=\(Int(sessionPct))")
+      if let weeklyPct = stats.sevenDayUtilization {
+        pixletArgs.append("weekly_pct=\(Int(weeklyPct))")
+      }
+      print("Claudius: pushing session=\(Int(sessionPct))%, weekly=\(Int(stats.sevenDayUtilization ?? 0))%")
+    } else {
+      // Local mode: pass raw cost/tokens
+      pixletArgs.append("usage=\(String(format: "%.2f", stats.cost))")
+      pixletArgs.append("tokens=\(stats.tokens)")
+      if costLimit  > 0 { pixletArgs.append("cost_limit=\(String(format: "%.2f", costLimit))") }
+      if tokenLimit > 0 { pixletArgs.append("token_limit=\(tokenLimit)") }
+      print("Claudius: pushing $\(String(format: "%.4f", stats.cost)), \(stats.tokens) tokens")
+    }
+
     var allPushed = true
     for deviceID in deviceIDs {
-      let pushed = await runPixlet(usage: stats.cost, tokens: stats.tokens, token: tidbytToken, deviceID: deviceID,
-                                   costLimit: costLimit, tokenLimit: tokenLimit, starFileName: starFileName)
+      let pushed = await runPixlet(extraArgs: pixletArgs, token: tidbytToken, deviceID: deviceID, starFileName: starFileName)
       if !pushed { allPushed = false }
     }
 
@@ -353,8 +369,8 @@ struct TidbytManager {
   /// Returns true on success. Runs pixlet on a background thread so it
   /// doesn't block the Swift cooperative thread pool with waitUntilExit().
   @discardableResult
-  private static func runPixlet(usage: Double, tokens: Int, token: String, deviceID: String,
-                                costLimit: Double, tokenLimit: Int, starFileName: String) async -> Bool {
+  private static func runPixlet(extraArgs: [String], token: String, deviceID: String,
+                                starFileName: String) async -> Bool {
     guard let starFilePath = Bundle.main.path(forResource: starFileName, ofType: "star") else {
       print("Claudius Error: \(starFileName).star not found in bundle resources")
       return false
@@ -384,10 +400,6 @@ struct TidbytManager {
     print("Claudius: Executing pixlet render with \(isolatedStarPath)")
 
     let outputPath = NSTemporaryDirectory() + "claude_usage.webp"
-    let formattedUsage   = String(format: "%.2f", usage)
-    let formattedTokens  = tokens >= 1_000
-      ? String(format: "%.1fk", Double(tokens) / 1_000)
-      : "\(tokens)"
 
     // Resolve pixlet from common install locations at runtime.
     let pixletCandidates = [
@@ -409,13 +421,8 @@ struct TidbytManager {
           var args = [
             "render", isolatedStarPath,
             "-o", outputPath,
-            "usage=\(formattedUsage)",
-            "tokens=\(tokens)",
           ]
-          // Only pass limits when the user has configured them; otherwise
-          // let the .star file fall back to its own defaults.
-          if costLimit  > 0 { args.append("cost_limit=\(String(format: "%.2f", costLimit))") }
-          if tokenLimit > 0 { args.append("token_limit=\(tokenLimit)") }
+          args.append(contentsOf: extraArgs)
           render.arguments = args
           try render.run()
           render.waitUntilExit()
@@ -433,7 +440,7 @@ struct TidbytManager {
           push.waitUntilExit()
 
           let ok = push.terminationStatus == 0
-          if ok { print("Claudius: pushed $\(formattedUsage) / \(formattedTokens) tokens") }
+          if ok { print("Claudius: pushed to Tidbyt device \(deviceID)") }
           else  { print("Claudius: pixlet push failed (exit \(push.terminationStatus))") }
           continuation.resume(returning: ok)
         } catch {

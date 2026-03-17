@@ -57,6 +57,8 @@ enum TidbytLayout: String, CaseIterable, Identifiable {
 struct SettingsView: View {
   @Binding var currentUsage: UsageStats
 
+  @State private var sessionKey: String = ""
+  @State private var orgId: String = ""
   @State private var tidbytToken: String = ""
   @State private var deviceID: String = ""
   @State private var selectedLayout: TidbytLayout = .defaultLayout
@@ -68,16 +70,38 @@ struct SettingsView: View {
 
   var body: some View {
     Form {
+      Section("Claude Web Integration") {
+        SecureField("Session Key", text: $sessionKey)
+        TextField("Organization ID", text: $orgId)
+          .font(.system(.body, design: .monospaced))
+
+        HStack(spacing: 4) {
+          Text("Fetches live usage % from claude.ai.")
+          Button("Open claude.ai") {
+            if let url = URL(string: "https://claude.ai/settings/usage") {
+              NSWorkspace.shared.open(url)
+            }
+          }
+          .buttonStyle(.link)
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+
+        Text("In your browser: DevTools (⌘⌥I) → Application → Cookies → claude.ai → copy \"sessionKey\" and \"lastActiveOrg\"")
+          .font(.caption)
+          .foregroundStyle(.secondary)
+      }
+
       Section("Tidbyt Credentials (optional)") {
         SecureField("Tidbyt API Token", text: $tidbytToken)
         TextField("Tidbyt Device ID", text: $deviceID)
-        
+
         Picker("Tidbyt Layout", selection: $selectedLayout) {
           ForEach(TidbytLayout.allCases) { layout in
             Text(layout.rawValue).tag(layout)
           }
         }
-        
+
         Text("Device IDs can be found in the Tidbyt app on your phone. Find them by tapping the ⚙️ icon -> Developer -> Get API key")
           .font(.caption)
           .foregroundStyle(.secondary)
@@ -153,6 +177,8 @@ struct SettingsView: View {
   }
 
   private func loadKeys() {
+    sessionKey  = KeychainHelper.shared.read(service: "ClaudeSession", account: "SessionKey") ?? ""
+    orgId       = UserDefaults.standard.string(forKey: "ClaudeOrgID") ?? ""
     tidbytToken = KeychainHelper.shared.read(service: "ClaudeTidbyt", account: "TidbytToken") ?? ""
     deviceID    = UserDefaults.standard.string(forKey: "TidbytDeviceID") ?? ""
     
@@ -173,6 +199,10 @@ struct SettingsView: View {
   }
 
   private func saveSettings() {
+    if let sData = sessionKey.data(using: .utf8) {
+      KeychainHelper.shared.save(sData, service: "ClaudeSession", account: "SessionKey")
+    }
+    UserDefaults.standard.set(orgId, forKey: "ClaudeOrgID")
     if let tData = tidbytToken.data(using: .utf8) {
       KeychainHelper.shared.save(tData, service: "ClaudeTidbyt", account: "TidbytToken")
     }
@@ -190,10 +220,21 @@ struct SettingsView: View {
     statusMessage = ""
 
     Task {
-      let stats = TidbytManager.readTodayUsage()
-      let pushed = await TidbytManager.push(stats: stats)
+      // Use web API if configured, same as performSync
+      var stats: UsageStats?
+      let sk = KeychainHelper.shared.read(service: "ClaudeSession", account: "SessionKey") ?? ""
+      let org = UserDefaults.standard.string(forKey: "ClaudeOrgID") ?? ""
+      if !sk.isEmpty && !org.isEmpty {
+        stats = await ClaudeWebUsageService.fetchUsage(sessionKey: sk, orgId: org)
+      }
+      if stats == nil {
+        var local = TidbytManager.readTodayUsage()
+        local.dataSource = .local
+        stats = local
+      }
+      let pushed = await TidbytManager.push(stats: stats!)
       await MainActor.run {
-        currentUsage = stats
+        currentUsage = stats!
         if pushed {
           statusMessage = "✓ Pushed to Tidbyt"
         } else {

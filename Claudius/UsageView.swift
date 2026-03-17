@@ -21,11 +21,28 @@ struct UsageView: View {
     return v > 0 ? v : 44_000
   }
 
-  private var costPct:  Double { min(appState.currentUsage.cost / costLimit, 1.0) }
-  private var tokenPct: Double { min(Double(appState.currentUsage.tokens) / Double(tokenLimit), 1.0) }
+  /// When web data is available, use the authoritative utilization %.
+  /// Otherwise fall back to local estimate.
+  private var tokenPct: Double {
+    if let webPct = appState.currentUsage.fiveHourUtilization {
+      return min(webPct / 100.0, 1.0)
+    }
+    return min(Double(appState.currentUsage.tokens) / Double(tokenLimit), 1.0)
+  }
 
-  private var costColor:  Color { costPct  < 0.9 ? Color(hex: "#d97757") : .red }
+  private var costPct: Double {
+    min(appState.currentUsage.cost / costLimit, 1.0)
+  }
+
+  private var sevenDayPct: Double {
+    if let webPct = appState.currentUsage.sevenDayUtilization {
+      return min(webPct / 100.0, 1.0)
+    }
+    return 0
+  }
+
   private var tokenColor: Color { tokenPct < 0.9 ? Color(hex: "#4caf50") : .red }
+  private var sevenDayColor: Color { sevenDayPct < 0.9 ? Color(hex: "#d97757") : .red }
 
   private var formattedTokens: String {
     let t = appState.currentUsage.tokens
@@ -39,6 +56,14 @@ struct UsageView: View {
   private func formatInterval(_ date: Date?) -> String {
     guard let date else { return "N/A" }
     let seconds = date.addingTimeInterval(5 * 60 * 60).timeIntervalSinceNow
+    if seconds <= 0 { return "Now" }
+    let h = Int(seconds) / 3600
+    let m = Int(seconds) / 60 % 60
+    return h > 0 ? "\(h)h \(m)m" : "\(m)m"
+  }
+
+  private func formatTimeUntil(_ date: Date) -> String {
+    let seconds = date.timeIntervalSinceNow
     if seconds <= 0 { return "Now" }
     let h = Int(seconds) / 3600
     let m = Int(seconds) / 60 % 60
@@ -62,7 +87,17 @@ struct UsageView: View {
         Text("Claude Code · 5h window")
           .font(.headline)
         Spacer()
-        
+
+        Button {
+          if let url = URL(string: "https://claude.ai/settings/usage") {
+            NSWorkspace.shared.open(url)
+          }
+        } label: {
+          Image(systemName: "safari")
+        }
+        .buttonStyle(.plain)
+        .help("View usage on claude.ai")
+
         SettingsLink {
           Image(systemName: "gearshape")
         }
@@ -87,59 +122,73 @@ struct UsageView: View {
       // Metrics
       VStack(spacing: 16) {
         MetricRow(
-          label: "Cost",
-          value: "$\(String(format: "%.2f", appState.currentUsage.cost))",
-          limit: "$\(String(format: "%.2f", costLimit))",
-          pct: costPct,
-          color: costColor
-        )
-
-        MetricRow(
-          label: "Tokens",
-          value: formattedTokens,
-          limit: tokenLimit >= 1_000_000
-            ? String(format: "%.0fM", Double(tokenLimit) / 1_000_000)
-            : String(format: "%.0fk", Double(tokenLimit) / 1_000),
+          label: "Current Session",
+          value: appState.currentUsage.fiveHourUtilization != nil
+            ? "\(Int(appState.currentUsage.fiveHourUtilization!))%"
+            : formattedTokens,
+          limit: appState.currentUsage.fiveHourUtilization != nil
+            ? "100%"
+            : (tokenLimit >= 1_000_000
+              ? String(format: "%.0fM", Double(tokenLimit) / 1_000_000)
+              : String(format: "%.0fk", Double(tokenLimit) / 1_000)),
           pct: tokenPct,
-          color: tokenColor
+          color: tokenColor,
+          rightLabel: appState.currentUsage.fiveHourResetsAt.map { "Resets in \(formatTimeUntil($0))" }
         )
 
-        TokenTimeSeriesChart(
-          buckets: appState.currentUsage.tokenTimeSeries,
-          color: tokenColor
-        )
-
-        Text("These figures are estimates. Anthropic uses a 5-hour sliding window — each message ages out individually 5 hours after it was sent, so usage decreases gradually rather than resetting all at once.")
-          .font(.caption)
-          .foregroundStyle(.secondary)
-          .fixedSize(horizontal: false, vertical: true)
-
-        HStack {
-          VStack(alignment: .leading, spacing: 4) {
-            Text("Messages")
-              .font(.caption)
-              .foregroundStyle(.secondary)
-            Text("\(appState.currentUsage.messages)")
-              .font(.system(.body, design: .monospaced).bold())
-          }
-          Spacer()
-          VStack(alignment: .trailing, spacing: 4) {
-            Text("Next drop")
-              .font(.caption)
-              .foregroundStyle(.secondary)
-            Text(nextDropIn)
-              .font(.system(.body, design: .monospaced).bold())
-          }
-          Spacer()
-          VStack(alignment: .trailing, spacing: 4) {
-            Text("Fully clear")
-              .font(.caption)
-              .foregroundStyle(.secondary)
-            Text(fullyClearIn)
-              .font(.system(.body, design: .monospaced).bold())
-          }
+        if appState.currentUsage.sevenDayUtilization != nil {
+          MetricRow(
+            label: "Weekly Limit",
+            value: "\(Int(appState.currentUsage.sevenDayUtilization!))%",
+            limit: "100%",
+            pct: sevenDayPct,
+            color: sevenDayColor,
+            rightLabel: appState.currentUsage.sevenDayResetsAt.map { "Resets in \(formatTimeUntil($0))" }
+          )
         }
-        .padding(.top, 8)
+
+        if appState.currentUsage.dataSource == .local {
+          TokenTimeSeriesChart(
+            buckets: appState.currentUsage.tokenTimeSeries,
+            color: tokenColor
+          )
+        }
+
+        if appState.currentUsage.dataSource == .local {
+          Text("These figures are estimates. For accurate data, follow the directions in the settings to pull data directly from claude.ai")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+
+        if appState.currentUsage.dataSource == .local {
+          HStack {
+            VStack(alignment: .leading, spacing: 4) {
+              Text("Messages")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+              Text("\(appState.currentUsage.messages)")
+                .font(.system(.body, design: .monospaced).bold())
+            }
+            Spacer()
+            VStack(alignment: .trailing, spacing: 4) {
+              Text("Next drop")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+              Text(nextDropIn)
+                .font(.system(.body, design: .monospaced).bold())
+            }
+            Spacer()
+            VStack(alignment: .trailing, spacing: 4) {
+              Text("Fully clear")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+              Text(fullyClearIn)
+                .font(.system(.body, design: .monospaced).bold())
+            }
+          }
+          .padding(.top, 8)
+        }
       }
       .padding(20)
 
@@ -148,11 +197,11 @@ struct UsageView: View {
       // Footer
       HStack {
         if let lastSync = appState.lastSyncTime {
-          Text("Synced \(lastSync.formatted(.relative(presentation: .named)))")
+          Text("Synced \(lastSync.formatted(.relative(presentation: .named))) · \(appState.currentUsage.dataSource.rawValue)")
             .font(.caption)
             .foregroundStyle(.secondary)
         } else {
-          Text("Reading local logs")
+          Text("Reading \(appState.currentUsage.dataSource.rawValue)")
             .font(.caption)
             .foregroundStyle(.secondary)
         }
@@ -178,6 +227,7 @@ private struct MetricRow: View {
   let limit: String
   let pct:   Double
   let color: Color
+  var rightLabel: String? = nil
 
   var body: some View {
     VStack(alignment: .leading, spacing: 6) {
@@ -208,9 +258,17 @@ private struct MetricRow: View {
       }
       .frame(height: 6)
 
-      Text("\(Int(pct * 100))% of limit")
-        .font(.caption2)
-        .foregroundStyle(.secondary)
+      HStack {
+        Text("\(Int(pct * 100))% of limit")
+          .font(.caption2)
+          .foregroundStyle(.secondary)
+        Spacer()
+        if let rightLabel {
+          Text(rightLabel)
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+        }
+      }
     }
   }
 }
