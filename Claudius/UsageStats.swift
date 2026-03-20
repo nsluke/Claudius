@@ -15,7 +15,7 @@ struct UsageStats {
   /// Where this data came from — web API or local JSONL parsing.
   var dataSource: UsageDataSource = .local
 
-  // MARK: - Web API fields (from claude.ai/api/organizations/{id}/usage)
+  // MARK: - Web API fields (from api.anthropic.com/api/oauth/usage)
 
   /// 5-hour window utilization percentage (0–100) as reported by claude.ai.
   var fiveHourUtilization: Double? = nil

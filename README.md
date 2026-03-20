@@ -8,7 +8,7 @@ A macOS menu bar app that tracks your [Claude Code](https://docs.anthropic.com/e
 
 ## Features
 
-- **Live usage from claude.ai** — fetches your real utilization percentages directly from claude.ai's internal API (session key required)
+- **Live usage from claude.ai** — automatically reads Claude Code's OAuth token from your Keychain to fetch real utilization percentages
 - **Menu bar at a glance** — current session usage percentage displayed right in your menu bar
 - **Dashboard window** — 5-hour session and 7-day weekly utilization with progress bars and reset countdowns
 - **Local fallback** — reads Claude Code's JSONL session logs from `~/.claude/projects/` when web integration isn't configured
@@ -46,16 +46,12 @@ Grab the `.dmg` from the [Releases](https://github.com/nsluke/Claudius/releases)
 
 ### Web integration (recommended)
 
-For the most accurate usage data, connect Claudius directly to your claude.ai account:
+For the most accurate usage data, Claudius reads the OAuth token that [Claude Code](https://docs.anthropic.com/en/docs/claude-code) stores in your macOS Keychain:
 
-1. **Launch Claudius** and open **Settings** (gear icon or menu bar > Settings)
-2. **Get your credentials** from claude.ai:
-   - Open [claude.ai/settings/usage](https://claude.ai/settings/usage) in your browser
-   - Open DevTools (**Cmd+Option+I**) → **Application** → **Cookies** → **claude.ai**
-   - Copy the value of `sessionKey` and `lastActiveOrg`
-3. **Paste them** into the Session Key and Organization ID fields in Claudius Settings
-4. **Pick your subscription plan** (Pro, Max 5x, Max 20x, or Manual)
-5. **Save** — Claudius will start polling claude.ai every 60 seconds
+1. **Install Claude Code** and log in to your claude.ai account
+2. **Launch Claudius** — it automatically detects the OAuth token
+3. **Pick your subscription plan** in Settings (Pro, Max 5x, Max 20x, or Manual)
+4. **Save** — Claudius will start polling every 60 seconds
 
 ### Local mode (no setup needed)
 
@@ -71,7 +67,7 @@ Without web credentials, Claudius automatically reads Claude Code's local JSONL 
 
 ### Web mode
 
-Claudius calls `claude.ai/api/organizations/{orgId}/usage` using your session cookie. This returns the same utilization percentages shown on the claude.ai settings page — a 5-hour session window and a 7-day weekly window, each as a percentage of your plan limit.
+Claudius reads the OAuth token that Claude Code stores in the macOS Keychain (under the service name `Claude Code-credentials`) and calls `api.anthropic.com/api/oauth/usage`. This returns the same utilization percentages shown on the claude.ai settings page — a 5-hour session window and a 7-day weekly window, each as a percentage of your plan limit. The token is validated for expiry before each request.
 
 ### Local mode
 
@@ -92,7 +88,7 @@ Claudius/
 ├── UsageView.swift              # Dashboard window with metrics and progress bars
 ├── SettingsView.swift           # Settings UI, plan selection, credentials
 ├── TidbytManager.swift          # JSONL log parsing, cost calculation, Pixlet integration
-├── KeychainHelper.swift         # Secure storage for session key and Tidbyt token
+├── KeychainHelper.swift         # Keychain access for Claude Code OAuth token and Tidbyt credentials
 ├── UsageStats.swift             # Data model for usage stats
 ├── claude_usage.star            # Tidbyt default layout (dual progress bars)
 ├── claude_minimal.star          # Tidbyt minimal layout (text only)

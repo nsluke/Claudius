@@ -57,8 +57,7 @@ enum TidbytLayout: String, CaseIterable, Identifiable {
 struct SettingsView: View {
   @Binding var currentUsage: UsageStats
 
-  @State private var sessionKey: String = ""
-  @State private var orgId: String = ""
+  @State private var oauthTokenFound: Bool = false
   @State private var tidbytToken: String = ""
   @State private var deviceID: String = ""
   @State private var selectedLayout: TidbytLayout = .defaultLayout
@@ -70,24 +69,14 @@ struct SettingsView: View {
 
   var body: some View {
     Form {
-      Section("Claude Web Integration") {
-        SecureField("Session Key", text: $sessionKey)
-        TextField("Organization ID", text: $orgId)
-          .font(.system(.body, design: .monospaced))
-
-        HStack(spacing: 4) {
-          Text("Fetches live usage % from claude.ai.")
-          Button("Open claude.ai") {
-            if let url = URL(string: "https://claude.ai/settings/usage") {
-              NSWorkspace.shared.open(url)
-            }
-          }
-          .buttonStyle(.link)
+      Section("Claude Code OAuth") {
+        HStack {
+          Image(systemName: oauthTokenFound ? "checkmark.circle.fill" : "xmark.circle.fill")
+            .foregroundStyle(oauthTokenFound ? .green : .red)
+          Text(oauthTokenFound ? "OAuth token found in Keychain" : "No OAuth token found")
         }
-        .font(.caption)
-        .foregroundStyle(.secondary)
 
-        Text("In your browser: DevTools (⌘⌥I) → Application → Cookies → claude.ai → copy \"sessionKey\" and \"lastActiveOrg\"")
+        Text("Claudius reads the OAuth token that Claude Code stores in your macOS Keychain. Make sure Claude Code is installed and you're logged in.")
           .font(.caption)
           .foregroundStyle(.secondary)
       }
@@ -153,23 +142,24 @@ struct SettingsView: View {
         }
       }
 
-      Section("Current Window") {
-        LabeledContent("Log directory") {
-          Text("~/.claude/projects/")
-            .font(.caption)
-            .foregroundStyle(.secondary)
-        }
-        LabeledContent("Cost") {
-          Text("$\(currentUsage.cost, specifier: "%.4f")")
-        }
-        LabeledContent("Tokens") {
-          Text("\(currentUsage.tokens)")
-        }
-        LabeledContent("Messages") {
-          Text("\(currentUsage.messages)")
+      if currentUsage.dataSource == .local {
+        Section("Current Window") {
+          LabeledContent("Log directory") {
+            Text("~/.claude/projects/")
+              .font(.caption)
+              .foregroundStyle(.secondary)
+          }
+          LabeledContent("Cost") {
+            Text("$\(currentUsage.cost, specifier: "%.4f")")
+          }
+          LabeledContent("Tokens") {
+            Text("\(currentUsage.tokens)")
+          }
+          LabeledContent("Messages") {
+            Text("\(currentUsage.messages)")
+          }
         }
       }
-
 
     }
     .formStyle(.grouped)
@@ -177,8 +167,7 @@ struct SettingsView: View {
   }
 
   private func loadKeys() {
-    sessionKey  = KeychainHelper.shared.read(service: "ClaudeSession", account: "SessionKey") ?? ""
-    orgId       = UserDefaults.standard.string(forKey: "ClaudeOrgID") ?? ""
+    oauthTokenFound = KeychainHelper.shared.readClaudeOAuthToken() != nil
     tidbytToken = KeychainHelper.shared.read(service: "ClaudeTidbyt", account: "TidbytToken") ?? ""
     deviceID    = UserDefaults.standard.string(forKey: "TidbytDeviceID") ?? ""
     
@@ -199,10 +188,6 @@ struct SettingsView: View {
   }
 
   private func saveSettings() {
-    if let sData = sessionKey.data(using: .utf8) {
-      KeychainHelper.shared.save(sData, service: "ClaudeSession", account: "SessionKey")
-    }
-    UserDefaults.standard.set(orgId, forKey: "ClaudeOrgID")
     if let tData = tidbytToken.data(using: .utf8) {
       KeychainHelper.shared.save(tData, service: "ClaudeTidbyt", account: "TidbytToken")
     }
@@ -220,21 +205,18 @@ struct SettingsView: View {
     statusMessage = ""
 
     Task {
-      // Use web API if configured, same as performSync
+      // Use OAuth API if available, same as performSync
       var stats: UsageStats?
-      let sk = KeychainHelper.shared.read(service: "ClaudeSession", account: "SessionKey") ?? ""
-      let org = UserDefaults.standard.string(forKey: "ClaudeOrgID") ?? ""
-      if !sk.isEmpty && !org.isEmpty {
-        stats = await ClaudeWebUsageService.fetchUsage(sessionKey: sk, orgId: org)
-      }
+      stats = await ClaudeWebUsageService.fetchUsage()
       if stats == nil {
         var local = TidbytManager.readTodayUsage()
         local.dataSource = .local
         stats = local
       }
-      let pushed = await TidbytManager.push(stats: stats!)
+      guard let stats else { return }
+      let pushed = await TidbytManager.push(stats: stats)
       await MainActor.run {
-        currentUsage = stats!
+        currentUsage = stats
         if pushed {
           statusMessage = "✓ Pushed to Tidbyt"
         } else {

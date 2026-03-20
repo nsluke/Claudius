@@ -32,7 +32,7 @@ class AppState: ObservableObject {
       .sink { [weak self] _ in self?.performSync(force: false) }
   }
 
-  /// Fetches usage — tries claude.ai web API first, falls back to local JSONL.
+  /// Fetches usage — tries OAuth API first, falls back to local JSONL.
   /// Then pushes to Tidbyt if credentials are set.
   func performSync(force: Bool = false) {
     guard !isSyncing else { return }
@@ -40,17 +40,12 @@ class AppState: ObservableObject {
     lastError = nil
 
     Task {
-      // Try web API first if session key + org ID are configured
+      // Try OAuth API first (reads token from Claude Code's Keychain entry)
       var stats: UsageStats?
-      let sessionKey = KeychainHelper.shared.read(service: "ClaudeSession", account: "SessionKey") ?? ""
-      let orgId = UserDefaults.standard.string(forKey: "ClaudeOrgID") ?? ""
-
-      if !sessionKey.isEmpty && !orgId.isEmpty {
-        stats = await ClaudeWebUsageService.fetchUsage(sessionKey: sessionKey, orgId: orgId)
-        if stats == nil {
-          print("Claudius: Web fetch failed, falling back to local logs")
-          await MainActor.run { self.lastError = "Web fetch failed — using local logs" }
-        }
+      stats = await ClaudeWebUsageService.fetchUsage()
+      if stats == nil {
+        print("Claudius: OAuth fetch failed, falling back to local logs")
+        await MainActor.run { self.lastError = "OAuth fetch failed — using local logs" }
       }
 
       // Fall back to local JSONL parsing
@@ -210,11 +205,8 @@ struct ClaudiusApp: App {
         return tokenLimit > 0 ? Int(Double(appState.currentUsage.tokens) / Double(tokenLimit) * 100) : 0
       }()
       let usageText = appState.isSyncing ? "…" : "\(pct)%"
-//      HStack {
-//        Image(systemName: "laurel.leading")
         Text( "􁊘 \(usageText) 􁊙")
           .foregroundStyle(usageColor)
-//      }
     }
 
     Window("Claude Usage", id: "usage") {

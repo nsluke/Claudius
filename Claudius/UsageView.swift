@@ -155,7 +155,7 @@ struct UsageView: View {
         }
 
         if appState.currentUsage.dataSource == .local {
-          Text("These figures are estimates. For accurate data, follow the directions in the settings to pull data directly from claude.ai")
+          Text("These figures are estimates. For accurate data, make sure Claude Code is installed and you're logged in to claude.ai.")
             .font(.caption)
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)

@@ -2,7 +2,8 @@
 //  ClaudeWebUsageService.swift
 //  Claudius
 //
-//  Fetches usage data directly from claude.ai's internal API.
+//  Fetches usage data from the Anthropic OAuth API using Claude Code's
+//  OAuth token stored in the macOS Keychain.
 //
 
 import Foundation
@@ -15,55 +16,39 @@ enum UsageDataSource: String {
 
 // MARK: - API Response Models
 
-/// Usage window from /api/organizations/{orgId}/usage
-private struct UsageWindow: Decodable {
+/// Usage period from /api/oauth/usage
+private struct UsagePeriod: Decodable {
   let utilization: Double  // percentage 0–100
   let resets_at: String    // ISO 8601 timestamp
 }
 
-/// Full response from /api/organizations/{orgId}/usage
-private struct UsageAPIResponse: Decodable {
-  let five_hour: UsageWindow?
-  let seven_day: UsageWindow?
-  let seven_day_oauth_apps: UsageWindow?
-  let seven_day_opus: UsageWindow?
-  let seven_day_sonnet: UsageWindow?
-  let seven_day_cowork: UsageWindow?
-  let extra_usage: ExtraUsage?
+/// Full response from /api/oauth/usage
+private struct OAuthUsageResponse: Decodable {
+  let five_hour: UsagePeriod?
+  let seven_day: UsagePeriod?
 
-  struct ExtraUsage: Decodable {
-    let is_enabled: Bool?
-    let monthly_limit: Double?
-    let used_credits: Double?
-    let utilization: Double?
-  }
 }
 
 // MARK: - Web Usage Service
 
 struct ClaudeWebUsageService {
 
-  private static let baseURL = "https://claude.ai"
+  private static let endpoint = "https://api.anthropic.com/api/oauth/usage"
 
-  /// Attempts to fetch usage stats from claude.ai.
-  /// Returns nil if the fetch fails for any reason.
-  static func fetchUsage(sessionKey: String, orgId: String) async -> UsageStats? {
-    guard !sessionKey.isEmpty, !orgId.isEmpty else {
-      print("Claudius Web: Missing session key or org ID")
+  /// Attempts to fetch usage stats using the OAuth token from Claude Code's Keychain entry.
+  /// Returns nil if the token is missing or the fetch fails.
+  static func fetchUsage() async -> UsageStats? {
+    guard let accessToken = KeychainHelper.shared.readClaudeOAuthToken() else {
+      print("Claudius Web: No Claude Code OAuth token found in Keychain")
       return nil
     }
 
-    let endpoint = "\(baseURL)/api/organizations/\(orgId)/usage"
     guard let url = URL(string: endpoint) else { return nil }
 
     var request = URLRequest(url: url)
     request.httpMethod = "GET"
-    request.setValue("sessionKey=\(sessionKey)", forHTTPHeaderField: "Cookie")
-    request.setValue("application/json", forHTTPHeaderField: "content-type")
-    request.setValue("*/*", forHTTPHeaderField: "Accept")
-    request.setValue("web_claude_ai", forHTTPHeaderField: "anthropic-client-platform")
-    request.setValue("1.0.0", forHTTPHeaderField: "anthropic-client-version")
-    request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36", forHTTPHeaderField: "User-Agent")
+    request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+    request.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
 
     do {
       let (data, response) = try await URLSession.shared.data(for: request)
@@ -74,7 +59,12 @@ struct ClaudeWebUsageService {
       }
 
       if httpResponse.statusCode == 401 || httpResponse.statusCode == 403 {
-        print("Claudius Web: Session key expired or invalid (HTTP \(httpResponse.statusCode))")
+        print("Claudius Web: OAuth token expired or invalid (HTTP \(httpResponse.statusCode))")
+        return nil
+      }
+
+      if httpResponse.statusCode == 429 {
+        print("Claudius Web: Rate limited (HTTP 429)")
         return nil
       }
 
@@ -83,7 +73,7 @@ struct ClaudeWebUsageService {
         return nil
       }
 
-      let usage = try JSONDecoder().decode(UsageAPIResponse.self, from: data)
+      let usage = try JSONDecoder().decode(OAuthUsageResponse.self, from: data)
       return buildStats(from: usage)
 
     } catch {
@@ -93,9 +83,7 @@ struct ClaudeWebUsageService {
   }
 
   /// Converts the API response into UsageStats.
-  /// The API returns utilization as a percentage (0–100).
-  /// We convert to estimated tokens using the configured plan limits.
-  private static func buildStats(from usage: UsageAPIResponse) -> UsageStats {
+  private static func buildStats(from usage: OAuthUsageResponse) -> UsageStats {
     var stats = UsageStats()
     stats.dataSource = .web
 
@@ -106,24 +94,19 @@ struct ClaudeWebUsageService {
     if let fiveHour = usage.five_hour {
       let pct = fiveHour.utilization / 100.0
 
-      // Estimate tokens from utilization percentage
       if tokenLimit > 0 {
         stats.tokens = Int(pct * Double(tokenLimit))
       }
-
-      // Estimate cost from utilization percentage
       if costLimit > 0 {
         stats.cost = pct * costLimit
       }
 
-      // Parse resets_at to derive the window start (5 hours before reset)
       if let resetDate = parseISO8601(fiveHour.resets_at) {
         let windowStart = resetDate.addingTimeInterval(-5 * 60 * 60)
         stats.oldestMessageDate = windowStart
-        stats.newestMessageDate = resetDate.addingTimeInterval(-5 * 60 * 60)
+        stats.newestMessageDate = Date()
       }
 
-      // Store the raw utilization for direct display
       stats.fiveHourUtilization = fiveHour.utilization
       stats.fiveHourResetsAt = parseISO8601(fiveHour.resets_at)
     }
