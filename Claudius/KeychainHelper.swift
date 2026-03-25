@@ -42,7 +42,7 @@ class KeychainHelper {
   // MARK: - Claude Code OAuth Token
 
   private static let credentialsService = "Claude Code-credentials"
-  private static let refreshEndpoint = "https://console.anthropic.com/v1/oauth/token"
+  private static let refreshEndpoint = "https://platform.claude.com/v1/oauth/token"
   private static let oauthClientId = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 
   struct ClaudeCredentials: Codable {
@@ -127,10 +127,14 @@ class KeychainHelper {
   private func refreshToken(creds: ClaudeCredentials) async -> String? {
     guard let url = URL(string: Self.refreshEndpoint) else { return nil }
 
+    let defaultScopes = ["user:profile", "user:inference", "user:sessions:claude_code", "user:mcp_servers", "user:file_upload"]
+    let scopes = (creds.claudeAiOauth.scopes?.isEmpty == false) ? creds.claudeAiOauth.scopes! : defaultScopes
+
     let body: [String: String] = [
       "grant_type": "refresh_token",
       "refresh_token": creds.claudeAiOauth.refreshToken,
-      "client_id": Self.oauthClientId
+      "client_id": Self.oauthClientId,
+      "scope": scopes.joined(separator: " ")
     ]
 
     var request = URLRequest(url: url)
@@ -138,36 +142,51 @@ class KeychainHelper {
     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
     request.httpBody = try? JSONEncoder().encode(body)
 
-    do {
-      let (data, response) = try await URLSession.shared.data(for: request)
+    // Retry up to 3 times with backoff for rate limiting
+    for attempt in 0..<3 {
+      if attempt > 0 {
+        let delay = UInt64(pow(2.0, Double(attempt))) * 1_000_000_000
+        try? await Task.sleep(nanoseconds: delay)
+      }
 
-      guard let httpResponse = response as? HTTPURLResponse,
-            httpResponse.statusCode == 200 else {
-        let code = (response as? HTTPURLResponse)?.statusCode ?? -1
-        print("Claudius Keychain: Token refresh failed (HTTP \(code))")
+      do {
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else { continue }
+
+        if httpResponse.statusCode == 429 {
+          print("Claudius Keychain: Token refresh rate limited, retrying (attempt \(attempt + 1)/3)...")
+          continue
+        }
+
+        guard httpResponse.statusCode == 200 else {
+          print("Claudius Keychain: Token refresh failed (HTTP \(httpResponse.statusCode))")
+          return nil
+        }
+
+        struct RefreshResponse: Decodable {
+          let access_token: String
+          let refresh_token: String
+          let expires_in: Double
+        }
+
+        let refreshed = try JSONDecoder().decode(RefreshResponse.self, from: data)
+
+        // Update the credentials in the Keychain
+        var updated = creds
+        updated.claudeAiOauth.accessToken = refreshed.access_token
+        updated.claudeAiOauth.refreshToken = refreshed.refresh_token
+        updated.claudeAiOauth.expiresAt = (Date().timeIntervalSince1970 + refreshed.expires_in) * 1000
+        writeClaudeCredentials(updated)
+
+        print("Claudius Keychain: Token refreshed successfully")
+        return refreshed.access_token
+      } catch {
+        print("Claudius Keychain: Token refresh error: \(error)")
         return nil
       }
-
-      struct RefreshResponse: Decodable {
-        let access_token: String
-        let refresh_token: String
-        let expires_in: Double
-      }
-
-      let refreshed = try JSONDecoder().decode(RefreshResponse.self, from: data)
-
-      // Update the credentials in the Keychain
-      var updated = creds
-      updated.claudeAiOauth.accessToken = refreshed.access_token
-      updated.claudeAiOauth.refreshToken = refreshed.refresh_token
-      updated.claudeAiOauth.expiresAt = (Date().timeIntervalSince1970 + refreshed.expires_in) * 1000
-      writeClaudeCredentials(updated)
-
-      print("Claudius Keychain: Token refreshed successfully")
-      return refreshed.access_token
-    } catch {
-      print("Claudius Keychain: Token refresh error: \(error)")
-      return nil
     }
+
+    print("Claudius Keychain: Token refresh failed after retries")
+    return nil
   }
 }
