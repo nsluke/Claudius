@@ -4,3 +4,4 @@ xcuserdata/
 build/
 DerivedData/
 claudius_full_context.txt
+scripts/.env
