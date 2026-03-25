@@ -1,8 +1,10 @@
 # Claudius
 
-A macOS menu bar app that shows your [Claude Code](https://docs.anthropic.com/en/docs/claude-code) usage in real time — no setup required.
+A macOS menu bar app that shows your [Claude Code](https://docs.anthropic.com/en/docs/claude-code) usage in real time.
 
 Claudius reads Claude Code's OAuth token straight from your macOS Keychain, so it works the moment you launch it. It shows the same session and weekly utilization percentages you'd see on claude.ai, right in your menu bar. Optionally, it can push a live display to a [Tidbyt](https://tidbyt.com) LED device.
+
+> **Prerequisite:** You must have [Claude Code](https://docs.anthropic.com/en/docs/claude-code) installed and logged in (`claude` in your terminal). Claudius depends on the OAuth token that Claude Code stores in your macOS Keychain — without it, usage tracking will fall back to local log estimates.
 
 | Menu Bar | Dashboard | Tidbyt |
 |----------|-----------|--------|
@@ -27,7 +29,7 @@ If the token is missing or expired, Claudius falls back to reading Claude Code's
 ## Requirements
 
 - **macOS 15+** (Sequoia)
-- **Claude Code** installed and logged in (so the OAuth token exists in your Keychain)
+- **[Claude Code](https://docs.anthropic.com/en/docs/claude-code)** installed and logged in — run `claude` in your terminal and sign in to your claude.ai account so the OAuth token is stored in your Keychain
 - **Tidbyt device + [Pixlet CLI](https://github.com/tidbyt/pixlet)** — only needed for the Tidbyt display
 
 ## Installation

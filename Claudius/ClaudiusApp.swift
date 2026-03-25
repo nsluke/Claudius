@@ -205,8 +205,12 @@ struct ClaudiusApp: App {
         return tokenLimit > 0 ? Int(Double(appState.currentUsage.tokens) / Double(tokenLimit) * 100) : 0
       }()
       let usageText = appState.isSyncing ? "…" : "\(pct)%"
-        Text( "􁊘 \(usageText) 􁊙")
-          .foregroundStyle(usageColor)
+      HStack(spacing: 2) {
+        Image(systemName: "laurel.leading")
+        Text(usageText)
+        Image(systemName: "laurel.trailing")
+      }
+      .foregroundStyle(usageColor)
     }
 
     Window("Claude Usage", id: "usage") {
