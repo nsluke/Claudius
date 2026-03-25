@@ -44,14 +44,16 @@ xcodebuild \
   -configuration Release \
   -derivedDataPath "$BUILD_DIR" \
   clean build \
-  CODE_SIGN_IDENTITY="$DEVELOPER_ID" \
-  CODE_SIGN_STYLE=Manual \
-  OTHER_CODE_SIGN_FLAGS="--options runtime" \
   | tail -5
 
 echo "==> Build succeeded."
 
-# ---- Verify signature --------------------------------------------
+# ---- Re-sign with Developer ID + hardened runtime ----------------
+
+echo "==> Signing with Developer ID ($DEVELOPER_ID)..."
+codesign --force --deep --options runtime \
+  --sign "$DEVELOPER_ID" \
+  "$APP_PATH"
 
 echo "==> Verifying code signature..."
 codesign --verify --deep --strict "$APP_PATH"
