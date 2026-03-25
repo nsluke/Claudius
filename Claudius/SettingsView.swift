@@ -167,7 +167,7 @@ struct SettingsView: View {
   }
 
   private func loadKeys() {
-    oauthTokenFound = KeychainHelper.shared.readClaudeOAuthToken() != nil
+    oauthTokenFound = KeychainHelper.shared.readClaudeCredentials() != nil
     tidbytToken = KeychainHelper.shared.read(service: "ClaudeTidbyt", account: "TidbytToken") ?? ""
     deviceID    = UserDefaults.standard.string(forKey: "TidbytDeviceID") ?? ""
     

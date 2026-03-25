@@ -38,7 +38,7 @@ struct ClaudeWebUsageService {
   /// Attempts to fetch usage stats using the OAuth token from Claude Code's Keychain entry.
   /// Returns nil if the token is missing or the fetch fails.
   static func fetchUsage() async -> UsageStats? {
-    guard let accessToken = KeychainHelper.shared.readClaudeOAuthToken() else {
+    guard let accessToken = await KeychainHelper.shared.readClaudeOAuthToken() else {
       print("Claudius Web: No Claude Code OAuth token found in Keychain")
       return nil
     }
