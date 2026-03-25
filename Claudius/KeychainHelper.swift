@@ -70,11 +70,9 @@ class KeychainHelper {
     }
 
     do {
-      let decoder = JSONDecoder()
-      decoder.keyDecodingStrategy = .convertFromSnakeCase
-      let creds = try decoder.decode(KeychainCredentials.self, from: data)
+      let creds = try JSONDecoder().decode(KeychainCredentials.self, from: data)
 
-      if creds.claudeAiOauth.expiresAt <= Date().timeIntervalSince1970 {
+      if creds.claudeAiOauth.expiresAt / 1000 <= Date().timeIntervalSince1970 {
         print("Claudius Keychain: OAuth token has expired")
         return nil
       }
