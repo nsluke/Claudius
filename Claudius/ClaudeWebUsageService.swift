@@ -33,7 +33,7 @@ private struct OAuthUsageResponse: Decodable {
 
 struct ClaudeWebUsageService {
 
-  private static let endpoint = "https://api.anthropic.com/api/oauth/usage"
+  private static let endpoint = "https://platform.claude.com/api/oauth/usage"
 
   /// Attempts to fetch usage stats using the OAuth token from Claude Code's Keychain entry.
   /// Returns nil if the token is missing or the fetch fails.
@@ -50,36 +50,47 @@ struct ClaudeWebUsageService {
     request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
     request.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
 
-    do {
-      let (data, response) = try await URLSession.shared.data(for: request)
-
-      guard let httpResponse = response as? HTTPURLResponse else {
-        print("Claudius Web: Not an HTTP response")
-        return nil
+    // Retry up to 3 times with backoff for rate limiting
+    for attempt in 0..<3 {
+      if attempt > 0 {
+        let delay = UInt64(pow(2.0, Double(attempt))) * 1_000_000_000
+        try? await Task.sleep(nanoseconds: delay)
       }
 
-      if httpResponse.statusCode == 401 || httpResponse.statusCode == 403 {
-        print("Claudius Web: OAuth token expired or invalid (HTTP \(httpResponse.statusCode))")
+      do {
+        let (data, response) = try await URLSession.shared.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse else {
+          print("Claudius Web: Not an HTTP response")
+          return nil
+        }
+
+        if httpResponse.statusCode == 401 || httpResponse.statusCode == 403 {
+          print("Claudius Web: OAuth token expired or invalid (HTTP \(httpResponse.statusCode))")
+          return nil
+        }
+
+        if httpResponse.statusCode == 429 {
+          print("Claudius Web: Rate limited, retrying (attempt \(attempt + 1)/3)...")
+          continue
+        }
+
+        guard httpResponse.statusCode == 200 else {
+          print("Claudius Web: Usage endpoint returned HTTP \(httpResponse.statusCode)")
+          return nil
+        }
+
+        let usage = try JSONDecoder().decode(OAuthUsageResponse.self, from: data)
+        return buildStats(from: usage)
+
+      } catch {
+        print("Claudius Web: Failed to fetch usage: \(error)")
         return nil
       }
-
-      if httpResponse.statusCode == 429 {
-        print("Claudius Web: Rate limited (HTTP 429)")
-        return nil
-      }
-
-      guard httpResponse.statusCode == 200 else {
-        print("Claudius Web: Usage endpoint returned HTTP \(httpResponse.statusCode)")
-        return nil
-      }
-
-      let usage = try JSONDecoder().decode(OAuthUsageResponse.self, from: data)
-      return buildStats(from: usage)
-
-    } catch {
-      print("Claudius Web: Failed to fetch usage: \(error)")
-      return nil
     }
+
+    print("Claudius Web: Usage fetch failed after 3 retries (rate limited)")
+    return nil
   }
 
   /// Converts the API response into UsageStats.
