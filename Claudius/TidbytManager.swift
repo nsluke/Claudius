@@ -112,16 +112,38 @@ struct TidbytManager {
   // MARK: Public entry point
 
   static func push(stats: UsageStats) async -> Bool {
+    let sharedToken = KeychainHelper.shared.read(service: "ClaudeTidbyt", account: "TidbytToken") ?? ""
     guard
-      let tidbytToken = KeychainHelper.shared.read(service: "ClaudeTidbyt", account: "TidbytToken"),
       let deviceIDString = UserDefaults.standard.string(forKey: "TidbytDeviceID"),
-      !tidbytToken.isEmpty, !deviceIDString.isEmpty
+      !deviceIDString.isEmpty
     else {
-      print("Claudius: missing Tidbyt credentials")
+      print("Claudius: missing device ID")
       return false
     }
 
-    let deviceIDs = deviceIDString.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+    // Each entry may be "deviceID" (uses shared token) or "deviceID:token"
+    // for per-device API keys (Tronbyt issues one key per device).
+    struct DeviceTarget { let id: String; let token: String }
+    let targets: [DeviceTarget] = deviceIDString
+      .split(separator: ",")
+      .map { $0.trimmingCharacters(in: .whitespaces) }
+      .filter { !$0.isEmpty }
+      .compactMap { entry in
+        let parts = entry.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
+          .map { String($0).trimmingCharacters(in: .whitespaces) }
+        let id = parts[0]
+        let token = parts.count == 2 && !parts[1].isEmpty ? parts[1] : sharedToken
+        guard !id.isEmpty, !token.isEmpty else {
+          print("Claudius: skipping device \"\(entry)\" — no token (set shared API token or use deviceID:token)")
+          return nil
+        }
+        return DeviceTarget(id: id, token: token)
+      }
+
+    guard !targets.isEmpty else {
+      print("Claudius: no valid device targets")
+      return false
+    }
 
     let costLimit  = UserDefaults.standard.double(forKey: "CostLimit")
     let tokenLimit = UserDefaults.standard.integer(forKey: "TokenLimit")
@@ -154,13 +176,61 @@ struct TidbytManager {
       print("Claudius: pushing $\(String(format: "%.4f", stats.cost)), \(stats.tokens) tokens")
     }
 
+    let tronbytServerURL = (UserDefaults.standard.string(forKey: "TronbytServerURL") ?? "")
+      .trimmingCharacters(in: .whitespaces)
+
     var allPushed = true
-    for deviceID in deviceIDs {
-      let pushed = await runPixlet(extraArgs: pixletArgs, token: tidbytToken, deviceID: deviceID, starFileName: starFileName)
+    for target in targets {
+      let pushed = await runPixlet(extraArgs: pixletArgs, token: target.token, deviceID: target.id,
+                                   starFileName: starFileName, tronbytServerURL: tronbytServerURL)
       if !pushed { allPushed = false }
     }
 
     return allPushed
+  }
+
+  // MARK: - Tronbyt direct push
+
+  /// POSTs a base64-encoded webp to {server}/v0/devices/{id}/push.
+  private static func pushToTronbyt(webpPath: String, serverURL: String,
+                                    token: String, deviceID: String) async -> Bool {
+    guard let data = try? Data(contentsOf: URL(fileURLWithPath: webpPath)) else {
+      print("Claudius: Tronbyt push — cannot read rendered webp at \(webpPath)")
+      return false
+    }
+
+    let trimmed = serverURL.trimmingCharacters(in: CharacterSet(charactersIn: "/ "))
+    guard let url = URL(string: "\(trimmed)/v0/devices/\(deviceID)/push") else {
+      print("Claudius: Tronbyt push — invalid server URL \(serverURL)")
+      return false
+    }
+
+    var req = URLRequest(url: url)
+    req.httpMethod = "POST"
+    req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+    req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+    let body: [String: Any] = [
+      "installationID": "claudius",
+      "image": data.base64EncodedString(),
+      "background": false,
+    ]
+    req.httpBody = try? JSONSerialization.data(withJSONObject: body)
+
+    do {
+      let (respData, resp) = try await URLSession.shared.data(for: req)
+      guard let http = resp as? HTTPURLResponse else { return false }
+      let ok = (200..<300).contains(http.statusCode)
+      if ok {
+        print("Claudius: pushed to Tronbyt \(url.host ?? "") device \(deviceID)")
+      } else {
+        let body = String(data: respData, encoding: .utf8) ?? ""
+        print("Claudius: Tronbyt push failed (HTTP \(http.statusCode)): \(body)")
+      }
+      return ok
+    } catch {
+      print("Claudius: Tronbyt push error: \(error)")
+      return false
+    }
   }
 
   // MARK: - Local log parsing
@@ -370,7 +440,7 @@ struct TidbytManager {
   /// doesn't block the Swift cooperative thread pool with waitUntilExit().
   @discardableResult
   private static func runPixlet(extraArgs: [String], token: String, deviceID: String,
-                                starFileName: String) async -> Bool {
+                                starFileName: String, tronbytServerURL: String) async -> Bool {
     guard let starFilePath = Bundle.main.path(forResource: starFileName, ofType: "star") else {
       print("Claudius Error: \(starFileName).star not found in bundle resources")
       return false
@@ -413,7 +483,7 @@ struct TidbytManager {
       return false
     }
 
-    return await withCheckedContinuation { continuation in
+    let renderOK: Bool = await withCheckedContinuation { continuation in
       DispatchQueue.global(qos: .utility).async {
         do {
           let render = Process()
@@ -432,7 +502,24 @@ struct TidbytManager {
             continuation.resume(returning: false)
             return
           }
+          continuation.resume(returning: true)
+        } catch {
+          print("Claudius: pixlet render error: \(error)")
+          continuation.resume(returning: false)
+        }
+      }
+    }
 
+    guard renderOK else { return false }
+
+    if !tronbytServerURL.isEmpty {
+      return await pushToTronbyt(webpPath: outputPath, serverURL: tronbytServerURL,
+                                 token: token, deviceID: deviceID)
+    }
+
+    return await withCheckedContinuation { continuation in
+      DispatchQueue.global(qos: .utility).async {
+        do {
           let push = Process()
           push.executableURL = URL(fileURLWithPath: pixletPath)
           push.arguments = ["push", "--api-token", token, "--installation-id", "claudius", deviceID, outputPath]
@@ -444,7 +531,7 @@ struct TidbytManager {
           else  { print("Claudius: pixlet push failed (exit \(push.terminationStatus))") }
           continuation.resume(returning: ok)
         } catch {
-          print("Claudius: pixlet error: \(error)")
+          print("Claudius: pixlet push error: \(error)")
           continuation.resume(returning: false)
         }
       }
