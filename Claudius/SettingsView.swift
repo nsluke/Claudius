@@ -60,6 +60,7 @@ struct SettingsView: View {
   @State private var oauthTokenFound: Bool = false
   @State private var tidbytToken: String = ""
   @State private var deviceID: String = ""
+  @State private var tronbytServerURL: String = ""
   @State private var selectedLayout: TidbytLayout = .defaultLayout
   @State private var costLimit: String = ""
   @State private var tokenLimit: String = ""
@@ -82,16 +83,21 @@ struct SettingsView: View {
       }
 
       Section("Tidbyt Credentials (optional)") {
-        SecureField("Tidbyt API Token", text: $tidbytToken)
-        TextField("Tidbyt Device ID", text: $deviceID)
+        SecureField("API Token", text: $tidbytToken)
+        TextField("Device ID(s)", text: $deviceID,
+                  prompt: Text("device1 or device1,device2:token2 for Tronbyt per-device keys"))
+        TextField("Tronbyt Server URL", text: $tronbytServerURL,
+                  prompt: Text("https://your-tronbyt-host (leave blank for Tidbyt cloud)"))
+          .textContentType(.URL)
+          .autocorrectionDisabled()
 
-        Picker("Tidbyt Layout", selection: $selectedLayout) {
+        Picker("Layout", selection: $selectedLayout) {
           ForEach(TidbytLayout.allCases) { layout in
             Text(layout.rawValue).tag(layout)
           }
         }
 
-        Text("Device IDs can be found in the Tidbyt app on your phone. Find them by tapping the ⚙️ icon -> Developer -> Get API key")
+        Text("Leave the server URL blank to push to Tidbyt's cloud via pixlet. Set it to your Tronbyt server (e.g. http://192.168.1.10:8000) to push directly over HTTP. Tronbyt issues one API key per device — enter multiple as \"id1:key1,id2:key2\", or put one key in the API Token field above and list device IDs separated by commas.")
           .font(.caption)
           .foregroundStyle(.secondary)
       }
@@ -102,10 +108,10 @@ struct SettingsView: View {
             saveSettings()
           }
 
-          Button(isSyncing ? "Syncing…" : "Push to Tidbyt") {
+          Button(isSyncing ? "Syncing…" : "Push to Device") {
             saveAndPush()
           }
-          .disabled(isSyncing || tidbytToken.isEmpty || deviceID.isEmpty)
+          .disabled(isSyncing || deviceID.isEmpty || (tidbytToken.isEmpty && !deviceID.contains(":")))
 
           Spacer()
 
@@ -170,6 +176,7 @@ struct SettingsView: View {
     oauthTokenFound = KeychainHelper.shared.readClaudeCredentials() != nil
     tidbytToken = KeychainHelper.shared.read(service: "ClaudeTidbyt", account: "TidbytToken") ?? ""
     deviceID    = UserDefaults.standard.string(forKey: "TidbytDeviceID") ?? ""
+    tronbytServerURL = UserDefaults.standard.string(forKey: "TronbytServerURL") ?? ""
     
     if let layoutRaw = UserDefaults.standard.string(forKey: "TidbytLayout"),
        let layout = TidbytLayout(rawValue: layoutRaw) {
@@ -192,6 +199,7 @@ struct SettingsView: View {
       KeychainHelper.shared.save(tData, service: "ClaudeTidbyt", account: "TidbytToken")
     }
     UserDefaults.standard.set(deviceID, forKey: "TidbytDeviceID")
+    UserDefaults.standard.set(tronbytServerURL.trimmingCharacters(in: .whitespaces), forKey: "TronbytServerURL")
     UserDefaults.standard.set(selectedLayout.rawValue, forKey: "TidbytLayout")
     UserDefaults.standard.set(selectedPlan.rawValue, forKey: "ClaudePlan")
     if let cl = Double(costLimit)  { UserDefaults.standard.set(cl,  forKey: "CostLimit") }
@@ -218,9 +226,9 @@ struct SettingsView: View {
       await MainActor.run {
         currentUsage = stats
         if pushed {
-          statusMessage = "✓ Pushed to Tidbyt"
+          statusMessage = "✓ Pushed"
         } else {
-          statusMessage = "✗ Push failed — check Tidbyt token & device ID"
+          statusMessage = "✗ Push failed — check token, device ID, and server URL"
         }
         isSyncing = false
       }
