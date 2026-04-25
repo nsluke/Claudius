@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0"
+     xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle"
+     xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <channel>
+        <title>Claudius</title>
+        <link>https://nsluke.github.io/Claudius/appcast.xml</link>
+        <description>Updates for Claudius</description>
+        <language>en</language>
+
+        <!--
+          Add a new <item> block for each release. The release.sh script prints
+          a ready-to-paste block (with EdDSA signature + size) when run.
+        -->
+
+    </channel>
+</rss>

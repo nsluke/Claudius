@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>SUFeedURL</key>
+	<string>https://nsluke.github.io/Claudius/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>zeVeXuyejG9grVkYdJ8Ehd6C8A0A8uz+v9mvwPZKY8A=</string>
+</dict>
+</plist>

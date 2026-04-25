@@ -93,12 +93,57 @@ xcrun notarytool submit "$DMG_OUT" \
 echo "==> Stapling notarization ticket..."
 xcrun stapler staple "$DMG_OUT"
 
+# ---- Sparkle EdDSA signature -------------------------------------
+
+echo "==> Generating Sparkle EdDSA signature..."
+
+# Try to locate sign_update from a built SPM artifact, then PATH, then ~/Sparkle/bin.
+SIGN_UPDATE=""
+for cand in \
+  "$(command -v sign_update 2>/dev/null || true)" \
+  "$HOME/Sparkle/bin/sign_update" \
+  "$(/bin/ls -d "$HOME/Library/Developer/Xcode/DerivedData/"Claudius-*/SourcePackages/artifacts/sparkle/Sparkle/bin/sign_update 2>/dev/null | head -n1)"; do
+  if [ -n "$cand" ] && [ -x "$cand" ]; then SIGN_UPDATE="$cand"; break; fi
+done
+
+if [ -z "$SIGN_UPDATE" ]; then
+  echo "    sign_update not found — skipping Sparkle signature."
+  echo "    Install Sparkle's tools (e.g. download the Sparkle release zip and put bin/ on PATH)."
+  SIG_LINE=""
+else
+  # sign_update prints e.g.: sparkle:edSignature="abc..." length="12345"
+  SIG_LINE="$("$SIGN_UPDATE" "$DMG_OUT")"
+  echo "    $SIG_LINE"
+fi
+
 # ---- Done --------------------------------------------------------
 
-DMG_SIZE="$(du -h "$DMG_OUT" | cut -f1 | xargs)"
+DMG_SIZE_HUMAN="$(du -h "$DMG_OUT" | cut -f1 | xargs)"
+DMG_SIZE_BYTES="$(stat -f%z "$DMG_OUT")"
+PUBDATE="$(date -u "+%a, %d %b %Y %H:%M:%S +0000")"
+DOWNLOAD_URL="https://github.com/nsluke/Claudius/releases/download/v${VERSION}/$(basename "$DMG_OUT")"
+
 echo ""
 echo "==> Done! DMG ready at:"
-echo "    $DMG_OUT ($DMG_SIZE)"
+echo "    $DMG_OUT ($DMG_SIZE_HUMAN)"
 echo ""
 echo "To upload to a GitHub release:"
 echo "    gh release upload v${VERSION} \"$DMG_OUT\" --clobber"
+echo ""
+echo "Appcast <item> entry to paste into docs/appcast.xml:"
+echo "----------------------------------------------------"
+cat <<EOF
+        <item>
+            <title>Version ${VERSION}</title>
+            <pubDate>${PUBDATE}</pubDate>
+            <sparkle:version>${VERSION}</sparkle:version>
+            <sparkle:shortVersionString>${VERSION}</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <enclosure
+                url="${DOWNLOAD_URL}"
+                type="application/octet-stream"
+                length="${DMG_SIZE_BYTES}"
+                ${SIG_LINE} />
+        </item>
+EOF
+echo "----------------------------------------------------"

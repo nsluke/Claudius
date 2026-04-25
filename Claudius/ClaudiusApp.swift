@@ -7,6 +7,33 @@
 
 import SwiftUI
 import Combine
+import Sparkle
+
+// MARK: - Sparkle "Check for Updates" view
+
+final class CheckForUpdatesViewModel: ObservableObject {
+  @Published var canCheckForUpdates = false
+
+  init(updater: SPUUpdater) {
+    updater.publisher(for: \.canCheckForUpdates)
+      .assign(to: &$canCheckForUpdates)
+  }
+}
+
+struct CheckForUpdatesView: View {
+  @ObservedObject private var viewModel: CheckForUpdatesViewModel
+  private let updater: SPUUpdater
+
+  init(updater: SPUUpdater) {
+    self.updater = updater
+    self.viewModel = CheckForUpdatesViewModel(updater: updater)
+  }
+
+  var body: some View {
+    Button("Check for Updates…", action: updater.checkForUpdates)
+      .disabled(!viewModel.canCheckForUpdates)
+  }
+}
 
 // MARK: - App State Manager
 class AppState: ObservableObject {
@@ -103,6 +130,7 @@ class AppState: ObservableObject {
 struct MenuContent: View {
   @EnvironmentObject var appState: AppState
   @Environment(\.openWindow) private var openWindow
+  let updater: SPUUpdater
 
   private var costLimit: Double {
     let v = UserDefaults.standard.double(forKey: "CostLimit")
@@ -159,6 +187,8 @@ struct MenuContent: View {
     SettingsLink { Text("Settings…") }
       .keyboardShortcut(",")
 
+    CheckForUpdatesView(updater: updater)
+
     Divider()
     Button("Quit") { NSApplication.shared.terminate(nil) }
       .keyboardShortcut("q")
@@ -170,6 +200,15 @@ struct MenuContent: View {
 @main
 struct ClaudiusApp: App {
   @StateObject private var appState = AppState()
+  private let updaterController: SPUStandardUpdaterController
+
+  init() {
+    updaterController = SPUStandardUpdaterController(
+      startingUpdater: true,
+      updaterDelegate: nil,
+      userDriverDelegate: nil
+    )
+  }
 
   private var costLimit: Double {
     let v = UserDefaults.standard.double(forKey: "CostLimit")
@@ -195,7 +234,7 @@ struct ClaudiusApp: App {
 
   var body: some Scene {
     MenuBarExtra {
-      MenuContent()
+      MenuContent(updater: updaterController.updater)
         .environmentObject(appState)
     } label: {
       let pct: Int = {
