@@ -112,7 +112,8 @@ if [ -z "$SIGN_UPDATE" ]; then
   SIG_LINE=""
 else
   # sign_update prints e.g.: sparkle:edSignature="abc..." length="12345"
-  SIG_LINE="$("$SIGN_UPDATE" "$DMG_OUT")"
+  # We emit length= ourselves below, so strip it from this line to avoid duplicates.
+  SIG_LINE="$("$SIGN_UPDATE" "$DMG_OUT" | sed -E 's/ *length="[^"]*"//')"
   echo "    $SIG_LINE"
 fi
 
