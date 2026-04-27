@@ -9,6 +9,199 @@ import SwiftUI
 import Combine
 import Sparkle
 
+// MARK: - Menu bar icon style
+
+enum MenuBarIconStyle: String, CaseIterable, Identifiable {
+  case bars            = "Bars"
+  case numbers         = "Numbers"
+  case barsAndNumbers  = "Bars + numbers"
+  case sessionPercent  = "Session %"
+
+  var id: String { rawValue }
+}
+
+// MARK: - Menu bar label
+
+private struct MenuBarLabel: View {
+  let sessionPct: Double          // 0...1, always defined (falls back to local tokens/limit)
+  let weeklyPct: Double?          // nil when web data unavailable
+  let isSyncing: Bool
+  let style: MenuBarIconStyle
+  let legacyColor: Color          // for `.sessionPercent`, mirrors prior behavior
+
+  var body: some View {
+    switch style {
+    case .bars:
+      RenderedToImage {
+        MenuBarBars(sessionPct: sessionPct, weeklyPct: weeklyPct)
+      }
+      .opacity(isSyncing ? 0.5 : 1)
+    case .numbers:
+      RenderedToImage {
+        MenuBarNumbers(sessionPct: sessionPct, weeklyPct: weeklyPct)
+      }
+      .opacity(isSyncing ? 0.5 : 1)
+    case .barsAndNumbers:
+      RenderedToImage {
+        MenuBarBarsAndNumbers(sessionPct: sessionPct, weeklyPct: weeklyPct)
+      }
+      .opacity(isSyncing ? 0.5 : 1)
+    case .sessionPercent:
+      let pct = Int((sessionPct * 100).rounded())
+      HStack(spacing: 2) {
+        Text(isSyncing ? "…" : "\(pct)%")
+      }
+      .foregroundStyle(legacyColor)
+    }
+  }
+}
+
+/// Renders an arbitrary SwiftUI view to an NSImage so it paints in MenuBarExtra's
+/// label, which doesn't render Shapes directly. ImageRenderer defaults to a
+/// light-mode environment, so we forward the live colorScheme — otherwise
+/// `Color.primary` always bakes as black and disappears on a dark menu bar.
+private struct RenderedToImage<Content: View>: View {
+  @Environment(\.colorScheme) private var colorScheme
+  @ViewBuilder let content: () -> Content
+
+  var body: some View {
+    let renderer = ImageRenderer(content:
+      content().environment(\.colorScheme, colorScheme)
+    )
+    renderer.scale = NSScreen.main?.backingScaleFactor ?? 2
+    let nsImage = renderer.nsImage ?? NSImage()
+    nsImage.isTemplate = false
+    return Image(nsImage: nsImage)
+  }
+}
+
+// MARK: - Bars
+
+private struct MenuBarBars: View {
+  let sessionPct: Double
+  let weeklyPct: Double?
+
+  var body: some View {
+    VStack(spacing: BarMetrics.gap) {
+      MiniBar(pct: sessionPct, color: BarMetrics.sessionColor(for: sessionPct))
+      if let weeklyPct {
+        MiniBar(pct: weeklyPct, color: BarMetrics.weeklyColor(for: weeklyPct))
+      }
+    }
+  }
+}
+
+private struct MenuBarNumbers: View {
+  let sessionPct: Double
+  let weeklyPct: Double?
+
+  private static func textColor(for pct: Double) -> Color {
+    pct >= 0.9 ? .red : .primary
+  }
+
+  private static let numberFont: Font = .system(size: 11, weight: .semibold, design: .monospaced)
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: BarMetrics.gap) {
+      Text("\(Int((sessionPct * 100).rounded()))")
+        .font(Self.numberFont)
+        .foregroundStyle(Self.textColor(for: sessionPct))
+      if let weeklyPct {
+        Text("\(Int((weeklyPct * 100).rounded()))")
+          .font(Self.numberFont)
+          .foregroundStyle(Self.textColor(for: weeklyPct))
+      }
+    }
+  }
+}
+
+private struct MenuBarBarsAndNumbers: View {
+  let sessionPct: Double
+  let weeklyPct: Double?
+
+  // Number rides on the translucent menu bar background — primary for contrast,
+  // red only when the matching bar is in alert state (mirrors the bar's signal).
+  private static func textColor(for pct: Double) -> Color {
+    pct >= 0.9 ? .red : .primary
+  }
+
+  private static let numberFont: Font = .system(size: 11, weight: .semibold, design: .monospaced)
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: BarMetrics.gap) {
+      HStack(spacing: 1) {
+        MiniBar(pct: sessionPct, color: BarMetrics.sessionColor(for: sessionPct))
+        Text("\(Int((sessionPct * 100).rounded()))")
+          .font(Self.numberFont)
+          .foregroundStyle(Self.textColor(for: sessionPct))
+      }
+      if let weeklyPct {
+        HStack(spacing: 1) {
+          MiniBar(pct: weeklyPct, color: BarMetrics.weeklyColor(for: weeklyPct))
+          Text("\(Int((weeklyPct * 100).rounded()))")
+            .font(Self.numberFont)
+            .foregroundStyle(Self.textColor(for: weeklyPct))
+        }
+      }
+    }
+  }
+}
+
+private struct MiniBar: View {
+  let pct: Double
+  let color: Color
+
+  var body: some View {
+    ZStack(alignment: .leading) {
+      RoundedRectangle(cornerRadius: BarMetrics.corner)
+        .fill(Color.gray.opacity(0.45))
+        .frame(width: BarMetrics.width, height: BarMetrics.height)
+      RoundedRectangle(cornerRadius: BarMetrics.corner)
+        .fill(color)
+        .frame(width: BarMetrics.width * CGFloat(min(max(pct, 0), 1)), height: BarMetrics.height)
+        .animation(.easeOut(duration: 0.3), value: pct)
+    }
+  }
+}
+
+private enum BarMetrics {
+  static let width: CGFloat = 22
+  static let height: CGFloat = 12
+  static let corner: CGFloat = 1.5
+  static let gap: CGFloat = 2
+
+  // Mirror UsageView's palette: session green / weekly Claude-orange, both flip red ≥ 90%.
+  static func sessionColor(for pct: Double) -> Color {
+    pct < 0.9 ? Color(red: 0x4c / 255, green: 0xaf / 255, blue: 0x50 / 255) : .red
+  }
+  static func weeklyColor(for pct: Double) -> Color {
+    pct < 0.9 ? Color(red: 0xd9 / 255, green: 0x77 / 255, blue: 0x57 / 255) : .red
+  }
+}
+
+/// Sample-data rendition of a menu-bar style. Used by the settings picker;
+/// renders SwiftUI directly (Shapes paint fine inside a normal window).
+struct MenuBarStylePreview: View {
+  let style: MenuBarIconStyle
+
+  private static let sampleSession: Double = 0.45
+  private static let sampleWeekly: Double = 0.70
+
+  var body: some View {
+    switch style {
+    case .bars:
+      MenuBarBars(sessionPct: Self.sampleSession, weeklyPct: Self.sampleWeekly)
+    case .numbers:
+      MenuBarNumbers(sessionPct: Self.sampleSession, weeklyPct: Self.sampleWeekly)
+    case .barsAndNumbers:
+      MenuBarBarsAndNumbers(sessionPct: Self.sampleSession, weeklyPct: Self.sampleWeekly)
+    case .sessionPercent:
+      Text("\(Int((Self.sampleSession * 100).rounded()))%")
+        .foregroundStyle(.green)
+    }
+  }
+}
+
 // MARK: - Sparkle "Check for Updates" view
 
 final class CheckForUpdatesViewModel: ObservableObject {
@@ -200,6 +393,7 @@ struct MenuContent: View {
 @main
 struct ClaudiusApp: App {
   @StateObject private var appState = AppState()
+  @AppStorage("MenuBarIconStyle") private var menuBarStyleRaw: String = MenuBarIconStyle.bars.rawValue
   private let updaterController: SPUStandardUpdaterController
 
   init() {
@@ -210,12 +404,36 @@ struct ClaudiusApp: App {
     )
   }
 
+  private var menuBarStyle: MenuBarIconStyle {
+    MenuBarIconStyle(rawValue: menuBarStyleRaw) ?? .bars
+  }
+
   private var costLimit: Double {
     let v = UserDefaults.standard.double(forKey: "CostLimit")
     return v > 0 ? v : 5.0
   }
-  
-  private var usageColor: Color {
+
+  private var tokenLimit: Int {
+    let v = UserDefaults.standard.integer(forKey: "TokenLimit")
+    return v > 0 ? v : 44_000
+  }
+
+  /// Session utilization (0…1). Falls back to local tokens / tokenLimit when web data isn't available.
+  private var sessionPct: Double {
+    if let webPct = appState.currentUsage.fiveHourUtilization {
+      return min(webPct / 100.0, 1.0)
+    }
+    guard tokenLimit > 0 else { return 0 }
+    return min(Double(appState.currentUsage.tokens) / Double(tokenLimit), 1.0)
+  }
+
+  /// Weekly utilization (0…1) when reported by the web API; nil otherwise.
+  private var weeklyPct: Double? {
+    appState.currentUsage.sevenDayUtilization.map { min($0 / 100.0, 1.0) }
+  }
+
+  /// Color used by the legacy `.sessionPercent` style — preserves prior thresholds.
+  private var legacyColor: Color {
     let pct: Double
     if let webPct = appState.currentUsage.fiveHourUtilization {
       pct = webPct / 100.0
@@ -227,29 +445,18 @@ struct ClaudiusApp: App {
     return .red
   }
 
-  private var tokenLimit: Int {
-    let v = UserDefaults.standard.integer(forKey: "TokenLimit")
-    return v > 0 ? v : 44_000
-  }
-
   var body: some Scene {
     MenuBarExtra {
       MenuContent(updater: updaterController.updater)
         .environmentObject(appState)
     } label: {
-      let pct: Int = {
-        if let webPct = appState.currentUsage.fiveHourUtilization {
-          return Int(webPct)
-        }
-        return tokenLimit > 0 ? Int(Double(appState.currentUsage.tokens) / Double(tokenLimit) * 100) : 0
-      }()
-      let usageText = appState.isSyncing ? "…" : "\(pct)%"
-      HStack(spacing: 2) {
-        Image(systemName: "laurel.leading")
-        Text(usageText)
-        Image(systemName: "laurel.trailing")
-      }
-      .foregroundStyle(usageColor)
+      MenuBarLabel(
+        sessionPct: sessionPct,
+        weeklyPct: weeklyPct,
+        isSyncing: appState.isSyncing,
+        style: menuBarStyle,
+        legacyColor: legacyColor
+      )
     }
 
     Window("Claude Usage", id: "usage") {

@@ -57,6 +57,8 @@ enum TidbytLayout: String, CaseIterable, Identifiable {
 struct SettingsView: View {
   @Binding var currentUsage: UsageStats
 
+  @AppStorage("MenuBarIconStyle") private var menuBarStyleRaw: String = MenuBarIconStyle.bars.rawValue
+
   @State private var oauthTokenFound: Bool = false
   @State private var tidbytToken: String = ""
   @State private var deviceID: String = ""
@@ -70,6 +72,14 @@ struct SettingsView: View {
 
   var body: some View {
     Form {
+      Section("Menu Bar Icon") {
+        MenuBarStyleSegmentedPicker(selection: $menuBarStyleRaw)
+
+        Text("\"Bars\" shows a 5h-session bar above a 7d-weekly bar. \"Session %\" is the original percentage.")
+          .font(.caption)
+          .foregroundStyle(.secondary)
+      }
+
       Section("Claude Code OAuth") {
         HStack {
           Image(systemName: oauthTokenFound ? "checkmark.circle.fill" : "xmark.circle.fill")
@@ -233,5 +243,53 @@ struct SettingsView: View {
         isSyncing = false
       }
     }
+  }
+}
+
+// MARK: - Menu Bar Style Picker
+
+/// Custom segmented-style picker that renders a live preview of each menu-bar
+/// option above its label. SwiftUI's native segmented Picker only accepts
+/// Text/Image, so we roll our own.
+private struct MenuBarStyleSegmentedPicker: View {
+  @Binding var selection: String
+
+  var body: some View {
+    HStack(spacing: 0) {
+      ForEach(Array(MenuBarIconStyle.allCases.enumerated()), id: \.element.id) { idx, style in
+        if idx > 0 {
+          Divider()
+            .padding(.vertical, 6)
+        }
+        segment(for: style)
+      }
+    }
+    .background(Color(nsColor: .controlBackgroundColor))
+    .overlay(
+      RoundedRectangle(cornerRadius: 6)
+        .stroke(Color.gray.opacity(0.3), lineWidth: 1)
+    )
+    .clipShape(RoundedRectangle(cornerRadius: 6))
+  }
+
+  private func segment(for style: MenuBarIconStyle) -> some View {
+    let isSelected = selection == style.rawValue
+    return Button {
+      selection = style.rawValue
+    } label: {
+      VStack(spacing: 6) {
+        MenuBarStylePreview(style: style)
+          .frame(height: 18)
+        Text(style.rawValue)
+          .font(.caption)
+          .foregroundStyle(.primary)
+      }
+      .frame(maxWidth: .infinity)
+      .padding(.vertical, 10)
+      .padding(.horizontal, 6)
+      .background(isSelected ? Color.accentColor.opacity(0.22) : Color.clear)
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
   }
 }
