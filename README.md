@@ -19,7 +19,7 @@ If the token is missing or expired, Claudius falls back to reading Claude Code's
 ## Features
 
 - **Zero-config auth** — automatically reads Claude Code's OAuth token from your Keychain; no session keys or org IDs to copy
-- **Menu bar at a glance** — current session utilization percentage in the menu bar
+- **Customizable menu bar** — show session and weekly utilization as bars, numbers, both, or a single session percentage
 - **Dashboard window** — 5-hour session and 7-day weekly utilization with progress bars and reset countdowns
 - **Local fallback** — estimates usage from Claude Code's JSONL logs when OAuth isn't available
 - **Plan presets** — select Claude Pro, Max 5x, or Max 20x to set your limits
