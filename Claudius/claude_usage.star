@@ -33,7 +33,7 @@ def main(config):
                         main_align = "space_between",
                         expanded = True,
                         children = [
-                            render.Text("Sess", font="tb-8", color=session_color),
+                            render.Text("Session", font="tb-8", color=session_color),
                             render.Text(str(session_pct) + "%", font="CG-pixel-3x5-mono", color="#fff"),
                         ]
                     ),

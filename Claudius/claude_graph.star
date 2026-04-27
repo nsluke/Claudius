@@ -1,83 +1,69 @@
 load("render.star", "render")
 
 def main(config):
-    session_pct = int(config.get("session_pct", "0"))
-    weekly_pct = int(config.get("weekly_pct", "0"))
-    usage_str = config.get("usage", "")
-    tokens_val = int(config.get("tokens", "0"))
+    session_pct_raw = config.get("session_pct", "")
+    is_web = session_pct_raw != ""
 
-    if session_pct > 0 or weekly_pct > 0 or config.get("session_pct", "") != "":
-        # Web mode: show percentages with visual bars
-        s_pct = session_pct / 100.0 if session_pct <= 100 else 1.0
-        w_pct = weekly_pct / 100.0 if weekly_pct <= 100 else 1.0
-        session_color = "#4caf50" if s_pct < 0.9 else "#ff0000"
-        weekly_color = "#d97757" if w_pct < 0.9 else "#ff0000"
-
-        # Vertical bars representing session and weekly usage
-        max_height = 20
-        session_h = int(max_height * s_pct) if int(max_height * s_pct) > 0 else 1
-        weekly_h = int(max_height * w_pct) if int(max_height * w_pct) > 0 else 1
-
-        return render.Root(
-            child = render.Column(
-                main_align = "space_evenly",
-                cross_align = "center",
-                children = [
-                    render.Row(
-                        children = [
-                            render.Text(str(session_pct) + "%", font="tb-8", color=session_color),
-                            render.Box(width=4, height=1),
-                            render.Text(str(weekly_pct) + "%", font="tb-8", color=weekly_color),
-                        ]
-                    ),
-                    render.Row(
-                        main_align = "center",
-                        cross_align = "end",
-                        children = [
-                            render.Box(width=16, height=session_h, color=session_color),
-                            render.Box(width=4, height=1),
-                            render.Box(width=16, height=weekly_h, color=weekly_color),
-                        ]
-                    ),
-                    render.Row(
-                        children = [
-                            render.Text("sess", font="CG-pixel-3x5-mono", color="#888"),
-                            render.Box(width=4, height=1),
-                            render.Text("week", font="CG-pixel-3x5-mono", color="#888"),
-                        ]
-                    ),
-                ]
-            )
-        )
+    if is_web:
+        session_pct = int(session_pct_raw)
+        weekly_pct  = int(config.get("weekly_pct", "0"))
+        s_pct = min(session_pct / 100.0, 1.0) if session_pct > 0 else 0.0
+        w_pct = min(weekly_pct  / 100.0, 1.0) if weekly_pct  > 0 else 0.0
+        s_color = "#4caf50" if s_pct < 0.9 else "#ff0000"
+        w_color = "#d97757" if w_pct < 0.9 else "#ff0000"
+        s_label = str(session_pct) + "%"
+        w_label = str(weekly_pct)  + "%"
     else:
-        # Local mode
-        tokens_str = str(int(tokens_val / 1000)) + "k" if tokens_val >= 1000 else str(tokens_val)
+        usage_str   = config.get("usage", "")
+        tokens_val  = int(config.get("tokens", "0"))
+        cost_limit  = float(config.get("cost_limit",  "15.00"))
+        token_limit = float(config.get("token_limit", "5000000"))
+        usage_val   = float(usage_str) if usage_str else 0.0
+        s_pct = min(usage_val  / cost_limit,  1.0) if cost_limit  > 0 else 0.0
+        w_pct = min(tokens_val / token_limit, 1.0) if token_limit > 0 else 0.0
+        s_color = "#d97757" if s_pct < 0.9 else "#ff0000"
+        w_color = "#4caf50" if w_pct < 0.9 else "#ff0000"
+        s_label = "$" + (usage_str if usage_str else "0")
+        w_label = (str(int(tokens_val / 1000)) + "k") if tokens_val >= 1000 else str(tokens_val)
 
-        bars = [
-            render.Box(width=2, height=4, color="#4caf50"),
-            render.Box(width=2, height=8, color="#4caf50"),
-            render.Box(width=2, height=6, color="#4caf50"),
-            render.Box(width=2, height=12, color="#4caf50"),
-            render.Box(width=2, height=10, color="#4caf50"),
-        ]
+    bar_max  = 22
+    bar_w    = 24
+    bg_color = "#222"
+    s_h = max(int(bar_max * s_pct), 1)
+    w_h = max(int(bar_max * w_pct), 1)
 
-        return render.Root(
-            child = render.Column(
-                main_align = "space_evenly",
-                cross_align = "center",
-                children = [
-                    render.Row(
-                        children = [
-                            render.Text("$" + usage_str, font="tb-8", color="#d97757"),
-                            render.Box(width=4, height=1),
-                            render.Text(tokens_str, font="tb-8", color="#4caf50"),
-                        ]
-                    ),
-                    render.Row(
-                        main_align = "center",
-                        cross_align = "end",
-                        children = bars
-                    )
-                ]
-            )
+    def vbar(filled_h, color):
+        return render.Stack(
+            children = [
+                render.Box(width = bar_w, height = bar_max, color = bg_color),
+                render.Padding(
+                    pad   = (0, bar_max - filled_h, 0, 0),
+                    child = render.Box(width = bar_w, height = filled_h, color = color),
+                ),
+            ],
         )
+
+    return render.Root(
+        child = render.Column(
+            expanded = True,
+            main_align = "space_between",
+            children = [
+                render.Row(
+                    expanded   = True,
+                    main_align = "space_evenly",
+                    children = [
+                        render.Text(s_label, font = "tom-thumb", color = s_color),
+                        render.Text(w_label, font = "tom-thumb", color = w_color),
+                    ],
+                ),
+                render.Row(
+                    expanded   = True,
+                    main_align = "space_evenly",
+                    children = [
+                        vbar(s_h, s_color),
+                        vbar(w_h, w_color),
+                    ],
+                ),
+            ],
+        ),
+    )

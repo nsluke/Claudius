@@ -166,9 +166,9 @@ private struct MiniBar: View {
 
 private enum BarMetrics {
   static let width: CGFloat = 22
-  static let height: CGFloat = 12
+  static let height: CGFloat = 8
   static let corner: CGFloat = 1.5
-  static let gap: CGFloat = 2
+  static let gap: CGFloat = 0
 
   // Mirror UsageView's palette: session green / weekly Claude-orange, both flip red ≥ 90%.
   static func sessionColor(for pct: Double) -> Color {
