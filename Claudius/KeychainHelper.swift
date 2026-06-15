@@ -45,6 +45,18 @@ class KeychainHelper {
   private static let refreshEndpoint = "https://platform.claude.com/v1/oauth/token"
   private static let oauthClientId = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 
+  // Claudius's own copy of the OAuth credentials.
+  //
+  // The `Claude Code-credentials` item is owned and frequently rewritten by
+  // Claude Code, so its Keychain ACL doesn't durably retain Claudius — reading
+  // it on every sync re-triggers the "Claudius wants to access…" prompt no
+  // matter how often you click "Always Allow". We mirror the credentials into
+  // an item Claudius owns: reads of our own item never prompt, so routine
+  // syncs stay silent. Claude Code's item is only read to (re)seed this cache
+  // when our copy is missing or its access token has expired.
+  private static let cacheService = "comm.claudius.app"
+  private static let cacheAccount = "ClaudeOAuthCache"
+
   struct ClaudeCredentials: Codable {
     var claudeAiOauth: OAuthData
 
@@ -106,19 +118,49 @@ class KeychainHelper {
     }
   }
 
-  /// Returns a valid access token, refreshing automatically if expired.
-  func readClaudeOAuthToken() async -> String? {
-    guard let (creds, _) = readClaudeCredentials() else { return nil }
+  /// Reads Claudius's own cached credentials. Reading an item Claudius owns
+  /// never prompts, so this is the steady-state path.
+  private func readCachedCredentials() -> ClaudeCredentials? {
+    guard let json = read(service: Self.cacheService, account: Self.cacheAccount),
+          let data = json.data(using: .utf8),
+          let creds = try? JSONDecoder().decode(ClaudeCredentials.self, from: data)
+    else { return nil }
+    return creds
+  }
 
-    let expiresAtSec = creds.claudeAiOauth.expiresAt / 1000
+  /// Mirrors credentials into Claudius's own Keychain item.
+  private func writeCachedCredentials(_ creds: ClaudeCredentials) {
+    guard let data = try? JSONEncoder().encode(creds) else { return }
+    save(data, service: Self.cacheService, account: Self.cacheAccount)
+  }
+
+  /// Returns a valid access token, refreshing automatically if expired.
+  ///
+  /// Order of preference, chosen to avoid repeatedly prompting for Keychain
+  /// access to Claude Code's shared item (see `cacheService`):
+  ///   1. Claudius's own cached token, if still valid — never prompts.
+  ///   2. Otherwise read Claude Code's item (may prompt once), and cache it.
+  ///   3. If that token is expired, refresh — writing the result back to both
+  ///      Claude Code's item (to keep Claude Code in sync) and our cache.
+  func readClaudeOAuthToken() async -> String? {
     let now = Date().timeIntervalSince1970
 
-    // If the token is still valid (with 60s buffer), return it
-    if expiresAtSec > now + 60 {
+    // 1. Steady state: use our own cached token while it's valid (60s buffer).
+    if let cached = readCachedCredentials(),
+       cached.claudeAiOauth.expiresAt / 1000 > now + 60 {
+      return cached.claudeAiOauth.accessToken
+    }
+
+    // 2. Cache missing or stale: fall back to Claude Code's item. This is the
+    //    only read that can prompt, and only when our cached token has expired.
+    guard let (creds, _) = readClaudeCredentials() else { return nil }
+
+    if creds.claudeAiOauth.expiresAt / 1000 > now + 60 {
+      writeCachedCredentials(creds)
       return creds.claudeAiOauth.accessToken
     }
 
-    // Token expired or about to expire — refresh it
+    // 3. Token expired or about to expire — refresh it.
     print("Claudius Keychain: Access token expired, refreshing...")
     return await refreshToken(creds: creds)
   }
@@ -176,7 +218,8 @@ class KeychainHelper {
         updated.claudeAiOauth.accessToken = refreshed.access_token
         updated.claudeAiOauth.refreshToken = refreshed.refresh_token
         updated.claudeAiOauth.expiresAt = (Date().timeIntervalSince1970 + refreshed.expires_in) * 1000
-        writeClaudeCredentials(updated)
+        writeClaudeCredentials(updated)   // keep Claude Code's item in sync
+        writeCachedCredentials(updated)   // and refresh Claudius's own cache
 
         print("Claudius Keychain: Token refreshed successfully")
         return refreshed.access_token
