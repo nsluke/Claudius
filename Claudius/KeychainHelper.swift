@@ -134,25 +134,50 @@ class KeychainHelper {
     save(data, service: Self.cacheService, account: Self.cacheAccount)
   }
 
-  /// Returns a valid access token, refreshing automatically if expired.
+  /// Refresh this far ahead of expiry. Claude Code's access token lives ~8h
+  /// and both Claude Code and Claudius refresh it. If Claude Code refreshes
+  /// first, it rewrites its Keychain item and resets the item's ACL, evicting
+  /// Claudius's "Always Allow" grant — so Claudius's next read prompts again.
+  /// By refreshing proactively (well before expiry) from our OWN cached refresh
+  /// token, Claudius becomes the refresh driver: it never needs to read Claude
+  /// Code's item after the initial seed, and it writes the fresh token back so
+  /// Claude Code stays supplied and never has to refresh/reset the ACL itself.
+  private static let refreshLeadTime: TimeInterval = 30 * 60
+
+  /// Returns a valid access token, refreshing proactively when needed.
   ///
-  /// Order of preference, chosen to avoid repeatedly prompting for Keychain
-  /// access to Claude Code's shared item (see `cacheService`):
-  ///   1. Claudius's own cached token, if still valid — never prompts.
-  ///   2. Otherwise read Claude Code's item (may prompt once), and cache it.
-  ///   3. If that token is expired, refresh — writing the result back to both
-  ///      Claude Code's item (to keep Claude Code in sync) and our cache.
+  /// Designed so that, after a one-time seed, Claudius never reads Claude
+  /// Code's shared Keychain item again (that read is what re-triggers the
+  /// "Always Allow" prompt — see `cacheService`):
+  ///   1. Cached token with comfortable runway → use it. Never prompts.
+  ///   2. Cached token expiring soon → refresh from the cached refresh token,
+  ///      writing the result to both Claude Code's item and our cache. No read
+  ///      of Claude Code's item, so no prompt.
+  ///   3. No cache, or self-refresh failed (Claude Code rotated the refresh
+  ///      token while we were not running) → re-seed from Claude Code's item.
+  ///      This is the only path that can prompt, and only in that edge case.
   func readClaudeOAuthToken() async -> String? {
     let now = Date().timeIntervalSince1970
 
-    // 1. Steady state: use our own cached token while it's valid (60s buffer).
-    if let cached = readCachedCredentials(),
-       cached.claudeAiOauth.expiresAt / 1000 > now + 60 {
-      return cached.claudeAiOauth.accessToken
+    if let cached = readCachedCredentials() {
+      let expiresAtSec = cached.claudeAiOauth.expiresAt / 1000
+
+      // 1. Comfortable runway — use the cached token as-is.
+      if expiresAtSec > now + Self.refreshLeadTime {
+        return cached.claudeAiOauth.accessToken
+      }
+
+      // 2. Expiring soon (or expired) — refresh from our own cached refresh
+      //    token, without touching Claude Code's item.
+      print("Claudius Keychain: Cached token near expiry, refreshing proactively...")
+      if let token = await refreshToken(creds: cached) {
+        return token
+      }
+      // Self-refresh failed — fall through to re-seed from Claude Code's item.
+      print("Claudius Keychain: Self-refresh failed, re-seeding from Claude Code's item")
     }
 
-    // 2. Cache missing or stale: fall back to Claude Code's item. This is the
-    //    only read that can prompt, and only when our cached token has expired.
+    // 3. Seed/fallback: read Claude Code's item (the only read that can prompt).
     guard let (creds, _) = readClaudeCredentials() else { return nil }
 
     if creds.claudeAiOauth.expiresAt / 1000 > now + 60 {
@@ -160,7 +185,6 @@ class KeychainHelper {
       return creds.claudeAiOauth.accessToken
     }
 
-    // 3. Token expired or about to expire — refresh it.
     print("Claudius Keychain: Access token expired, refreshing...")
     return await refreshToken(creds: creds)
   }
