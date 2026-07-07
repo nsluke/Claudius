@@ -45,6 +45,13 @@ class KeychainHelper {
   private static let refreshEndpoint = "https://platform.claude.com/v1/oauth/token"
   private static let oauthClientId = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 
+  // In-memory cache so a still-valid token is served without touching the Keychain
+  // on every usage poll. Each SecItemCopyMatching on "Claude Code-credentials" can
+  // re-trigger the macOS "Always Allow" prompt, so we read the Keychain only when
+  // the cache is empty or expired.
+  private var cachedAccessToken: String?
+  private var cachedExpiresAtSec: Double = 0
+
   struct ClaudeCredentials: Codable {
     var claudeAiOauth: OAuthData
 
@@ -84,37 +91,25 @@ class KeychainHelper {
     }
   }
 
-  /// Writes updated credentials back to the Keychain.
-  private func writeClaudeCredentials(_ creds: ClaudeCredentials) {
-    guard let data = try? JSONEncoder().encode(creds) else { return }
-
-    let query = [
-      kSecClass: kSecClassGenericPassword,
-      kSecAttrService: Self.credentialsService
-    ] as CFDictionary
-
-    let update = [kSecValueData: data] as CFDictionary
-    let status = SecItemUpdate(query, update)
-
-    if status == errSecItemNotFound {
-      let addQuery = [
-        kSecClass: kSecClassGenericPassword,
-        kSecAttrService: Self.credentialsService,
-        kSecValueData: data
-      ] as CFDictionary
-      SecItemAdd(addQuery, nil)
-    }
-  }
-
   /// Returns a valid access token, refreshing automatically if expired.
   func readClaudeOAuthToken() async -> String? {
+    let now = Date().timeIntervalSince1970
+
+    // Serve the in-memory cached token if it is still valid (60s buffer),
+    // without touching the Keychain.
+    if let token = cachedAccessToken, cachedExpiresAtSec > now + 60 {
+      return token
+    }
+
+    // Cache empty or expired — read the Keychain (may prompt) to get fresh state.
     guard let (creds, _) = readClaudeCredentials() else { return nil }
 
     let expiresAtSec = creds.claudeAiOauth.expiresAt / 1000
-    let now = Date().timeIntervalSince1970
 
-    // If the token is still valid (with 60s buffer), return it
+    // If the token from the Keychain is still valid (with 60s buffer), cache and return it.
     if expiresAtSec > now + 60 {
+      cachedAccessToken = creds.claudeAiOauth.accessToken
+      cachedExpiresAtSec = expiresAtSec
       return creds.claudeAiOauth.accessToken
     }
 
@@ -171,12 +166,13 @@ class KeychainHelper {
 
         let refreshed = try JSONDecoder().decode(RefreshResponse.self, from: data)
 
-        // Update the credentials in the Keychain
-        var updated = creds
-        updated.claudeAiOauth.accessToken = refreshed.access_token
-        updated.claudeAiOauth.refreshToken = refreshed.refresh_token
-        updated.claudeAiOauth.expiresAt = (Date().timeIntervalSince1970 + refreshed.expires_in) * 1000
-        writeClaudeCredentials(updated)
+        // Deliberately DO NOT write back to "Claude Code-credentials". Claude Code
+        // owns and refreshes that item; rewriting it resets its ACL and races
+        // Claude Code's own reads, which broke the granted "Always Allow" and
+        // caused the repeating Keychain prompt loop. We treat the item as
+        // read-only and keep the refreshed token in memory only.
+        cachedAccessToken = refreshed.access_token
+        cachedExpiresAtSec = Date().timeIntervalSince1970 + refreshed.expires_in
 
         print("Claudius Keychain: Token refreshed successfully")
         return refreshed.access_token

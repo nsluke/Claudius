@@ -16,6 +16,12 @@ Claudius finds the OAuth token that Claude Code stores in your macOS Keychain (s
 
 If the token is missing or expired, Claudius falls back to reading Claude Code's local JSONL session logs from `~/.claude/projects/` and estimating usage from raw token counts.
 
+### Keychain access
+
+Claudius treats the Claude Code login token (`Claude Code-credentials`) as **read-only** — Claude Code owns and refreshes that item, so Claudius never writes to it. When a token needs refreshing, the new access token is kept in memory only and the Keychain item is left untouched. This avoids resetting the item's access-control list, which was what caused the repeating "Always Allow" prompt.
+
+macOS ties the one-time "Always Allow" grant to the app's designated requirement (its code signature). For that grant to persist across updates, release builds must be signed with a stable Developer ID — a fixed Team ID and bundle identifier — so the designated requirement doesn't change from one build to the next. Unsigned or ad-hoc builds get a new identity each time and will re-prompt.
+
 ## Features
 
 - **Zero-config auth** — automatically reads Claude Code's OAuth token from your Keychain; no session keys or org IDs to copy
