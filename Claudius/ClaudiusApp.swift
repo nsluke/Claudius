@@ -262,10 +262,11 @@ class AppState: ObservableObject {
     Task {
       // Try OAuth API first (reads token from Claude Code's Keychain entry)
       var stats: UsageStats?
-      stats = await ClaudeWebUsageService.fetchUsage()
+      stats = await ClaudeWebUsageService.fetchUsage(force: force)
       if stats == nil {
         print("Claudius: OAuth fetch failed, falling back to local logs")
-        await MainActor.run { self.lastError = "OAuth fetch failed — using local logs" }
+        let reason = await KeychainHelper.shared.claudeAuthProblem() ?? "OAuth fetch failed"
+        await MainActor.run { self.lastError = "\(reason) — using local logs" }
       }
 
       // Fall back to local JSONL parsing

@@ -12,13 +12,15 @@ Claudius reads Claude Code's OAuth token straight from your macOS Keychain, so i
 
 ## How It Works
 
-Claudius finds the OAuth token that Claude Code stores in your macOS Keychain (service `Claude Code-credentials`) and calls the Anthropic OAuth usage API every 60 seconds. The API returns your 5-hour session utilization and 7-day weekly utilization as percentages of your plan limit — the same numbers shown on the claude.ai settings page.
+Claudius finds the OAuth token that Claude Code stores in your macOS Keychain (service `Claude Code-credentials`) and calls the Anthropic OAuth usage API every 5 minutes. The API returns your 5-hour session utilization and 7-day weekly utilization as percentages of your plan limit — the same numbers shown on the claude.ai settings page.
 
 If the token is missing or expired, Claudius falls back to reading Claude Code's local JSONL session logs from `~/.claude/projects/` and estimating usage from raw token counts.
 
 ### Keychain access
 
-Claudius treats the Claude Code login token (`Claude Code-credentials`) as **read-only** — Claude Code owns and refreshes that item, so Claudius never writes to it. When a token needs refreshing, the new access token is kept in memory only and the Keychain item is left untouched. This avoids resetting the item's access-control list, which was what caused the repeating "Always Allow" prompt.
+Claudius treats the Claude Code login token (`Claude Code-credentials`) as **read-only** — Claude Code owns and refreshes that item, so Claudius never writes to it. Rewriting it would reset the item's access-control list and race Claude Code's own refreshes, which is what caused the repeating "Always Allow" prompt.
+
+Claudius reads that item once to bootstrap, then keeps its own copy of the credentials in a Claudius-owned Keychain item and refreshes that copy independently. Reading its own item never prompts, so routine polls and app restarts touch the Keychain silently. Claude Code's item is only consulted again if Claudius's stored refresh token stops working (for example after you re-log-in to Claude Code). If you deny the prompt, Claudius backs off — it won't ask again until you click **Sync Now** or relaunch the app.
 
 macOS ties the one-time "Always Allow" grant to the app's designated requirement (its code signature). For that grant to persist across updates, release builds must be signed with a stable Developer ID — a fixed Team ID and bundle identifier — so the designated requirement doesn't change from one build to the next. Unsigned or ad-hoc builds get a new identity each time and will re-prompt.
 
@@ -30,7 +32,7 @@ macOS ties the one-time "Always Allow" grant to the app's designated requirement
 - **Local fallback** — estimates usage from Claude Code's JSONL logs when OAuth isn't available
 - **Plan presets** — select Claude Pro, Max 5x, or Max 20x to set your limits
 - **Tidbyt integration** — push a live usage display to your Tidbyt LED device (optional)
-- **Background sync** — refreshes every 60 seconds
+- **Background sync** — refreshes every 5 minutes
 
 ## Requirements
 
@@ -44,7 +46,7 @@ macOS ties the one-time "Always Allow" grant to the app's designated requirement
 
 Grab the `.dmg` from the [Releases](https://github.com/nsluke/Claudius/releases) page, open it, and drag Claudius to your Applications folder.
 
-> **Gatekeeper note:** Since the app is not notarized, macOS will block it on first launch. Right-click the app and choose **Open**, then click **Open** in the dialog. You only need to do this once.
+> Releases are signed with a Developer ID and notarized by Apple, so the app opens normally on first launch.
 
 ### Build from source
 
