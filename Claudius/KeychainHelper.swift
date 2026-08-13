@@ -8,7 +8,7 @@
 import Foundation
 import Security
 
-class KeychainHelper {
+final class KeychainHelper: Sendable {
   static let shared = KeychainHelper()
 
   func save(_ data: Data, service: String, account: String) {
@@ -39,16 +39,24 @@ class KeychainHelper {
     return String(data: data, encoding: .utf8)
   }
 
+  func delete(service: String, account: String) {
+    let query = [
+      kSecClass: kSecClassGenericPassword,
+      kSecAttrService: service,
+      kSecAttrAccount: account
+    ] as CFDictionary
+
+    SecItemDelete(query)
+  }
+
   // MARK: - Claude Code OAuth Token
 
-  private static let credentialsService = "Claude Code-credentials"
-  private static let refreshEndpoint = "https://platform.claude.com/v1/oauth/token"
-  private static let oauthClientId = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+  static let claudeCodeService = "Claude Code-credentials"
 
-  struct ClaudeCredentials: Codable {
+  struct ClaudeCredentials: Codable, Sendable {
     var claudeAiOauth: OAuthData
 
-    struct OAuthData: Codable {
+    struct OAuthData: Codable, Sendable {
       var accessToken: String
       var refreshToken: String
       var expiresAt: Double
@@ -58,11 +66,178 @@ class KeychainHelper {
     }
   }
 
-  /// Reads the full credentials blob from the Keychain.
-  func readClaudeCredentials() -> (data: ClaudeCredentials, raw: Data)? {
+  /// Promptless check that Claude Code's credentials item exists. Asks for
+  /// attributes only — never the secret data — so the keychain ACL is not
+  /// consulted and no "Always Allow" prompt can appear.
+  func claudeCredentialsPresent() -> Bool {
     let query = [
       kSecClass: kSecClassGenericPassword,
-      kSecAttrService: Self.credentialsService,
+      kSecAttrService: Self.claudeCodeService,
+      kSecReturnAttributes: true,
+      kSecMatchLimit: kSecMatchLimitOne
+    ] as CFDictionary
+
+    var result: AnyObject?
+    return SecItemCopyMatching(query, &result) == errSecSuccess
+  }
+
+  /// Returns a valid access token, refreshing automatically if expired.
+  /// Pass `force: true` (Sync Now) to retry after a denied keychain prompt.
+  func readClaudeOAuthToken(force: Bool = false) async -> String? {
+    await ClaudeTokenProvider.shared.validAccessToken(force: force)
+  }
+
+  /// User-facing reason the last token acquisition failed, if it did.
+  func claudeAuthProblem() async -> String? {
+    await ClaudeTokenProvider.shared.lastProblem
+  }
+}
+
+// MARK: - Claude token provider
+
+/// Owns all access to Claude OAuth credentials.
+///
+/// Claude Code's keychain item ("Claude Code-credentials") is treated as
+/// read-only bootstrap material: decrypting another app's item is what raises
+/// the macOS "Always Allow" prompt, and Claude Code resets the item's ACL
+/// whenever it rewrites the item, so any grant is eventually lost. This actor
+/// therefore reads that item as rarely as possible — it keeps its own copy of
+/// the credentials in a Claudius-owned keychain item (which never prompts) and
+/// refreshes that copy independently. It goes back to Claude Code's item only
+/// when its own refresh lineage is rejected (e.g. after a Claude Code
+/// re-login).
+///
+/// Acquisition is single-flighted so concurrent polls can't stack prompts, and
+/// after a denied prompt the actor stops touching Claude Code's item until the
+/// user explicitly retries via Sync Now.
+actor ClaudeTokenProvider {
+  static let shared = ClaudeTokenProvider()
+
+  private static let refreshEndpoint = "https://platform.claude.com/v1/oauth/token"
+  private static let oauthClientId = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+  private static let ownService = "Claudius"
+  private static let ownAccount = "ClaudeOAuthCredentials"
+
+  private var cachedCreds: KeychainHelper.ClaudeCredentials?
+  private var inFlight: Task<String?, Never>?
+  private var claudeCodeReadDenied = false
+  private(set) var lastProblem: String?
+
+  func validAccessToken(force: Bool) async -> String? {
+    if force { claudeCodeReadDenied = false }
+
+    // Fast path: in-memory token still valid (60s buffer) — no keychain, no network.
+    if let creds = cachedCreds, Self.isUsable(creds) {
+      lastProblem = nil
+      return creds.claudeAiOauth.accessToken
+    }
+
+    // Single-flight: piggyback on an acquisition already in progress.
+    if let inFlight { return await inFlight.value }
+
+    let task = Task { await self.acquireToken() }
+    inFlight = task
+    let token = await task.value
+    inFlight = nil
+    return token
+  }
+
+  // MARK: Acquisition
+
+  private func acquireToken() async -> String? {
+    lastProblem = nil
+
+    // 1. Our own persisted copy — Claudius owns this item, so reading it never prompts.
+    if let own = loadOwnCredentials() {
+      if Self.isUsable(own) {
+        cachedCreds = own
+        return own.claudeAiOauth.accessToken
+      }
+
+      switch await refresh(creds: own) {
+      case .success(let updated):
+        store(updated)
+        return updated.claudeAiOauth.accessToken
+      case .invalidGrant:
+        // Our lineage is dead (e.g. Claude Code re-login rotated the family).
+        // Discard it and bootstrap fresh from Claude Code's item below.
+        print("Claudius Keychain: Own refresh token rejected, re-bootstrapping from Claude Code")
+        cachedCreds = nil
+        KeychainHelper.shared.delete(service: Self.ownService, account: Self.ownAccount)
+      case .transient(let message):
+        lastProblem = message
+        return nil
+      }
+    }
+
+    // 2. Bootstrap from Claude Code's item — the only read that can prompt.
+    if claudeCodeReadDenied {
+      lastProblem = "Keychain access denied — use Sync Now to retry"
+      return nil
+    }
+
+    switch readClaudeCodeItem() {
+    case .found(let creds):
+      store(creds)
+      if Self.isUsable(creds) {
+        return creds.claudeAiOauth.accessToken
+      }
+
+      switch await refresh(creds: creds) {
+      case .success(let updated):
+        store(updated)
+        return updated.claudeAiOauth.accessToken
+      case .invalidGrant:
+        cachedCreds = nil
+        KeychainHelper.shared.delete(service: Self.ownService, account: Self.ownAccount)
+        lastProblem = "Claude Code login expired — run `claude` and sign in"
+        return nil
+      case .transient(let message):
+        lastProblem = message
+        return nil
+      }
+
+    case .notFound:
+      lastProblem = "Claude Code token not found — sign in with `claude` first"
+      return nil
+
+    case .denied(let status):
+      claudeCodeReadDenied = true
+      lastProblem = "Keychain access denied — use Sync Now to retry"
+      print("Claudius Keychain: Claude Code credentials read denied (status: \(status)); pausing keychain reads until Sync Now")
+      return nil
+    }
+  }
+
+  private static func isUsable(_ creds: KeychainHelper.ClaudeCredentials) -> Bool {
+    creds.claudeAiOauth.expiresAt / 1000 > Date().timeIntervalSince1970 + 60
+  }
+
+  private func store(_ creds: KeychainHelper.ClaudeCredentials) {
+    cachedCreds = creds
+    if let data = try? JSONEncoder().encode(creds) {
+      KeychainHelper.shared.save(data, service: Self.ownService, account: Self.ownAccount)
+    }
+  }
+
+  private func loadOwnCredentials() -> KeychainHelper.ClaudeCredentials? {
+    guard let json = KeychainHelper.shared.read(service: Self.ownService, account: Self.ownAccount),
+          let data = json.data(using: .utf8) else { return nil }
+    return try? JSONDecoder().decode(KeychainHelper.ClaudeCredentials.self, from: data)
+  }
+
+  // MARK: Claude Code's keychain item (strictly read-only)
+
+  private enum ClaudeCodeReadResult {
+    case found(KeychainHelper.ClaudeCredentials)
+    case notFound
+    case denied(OSStatus)
+  }
+
+  private func readClaudeCodeItem() -> ClaudeCodeReadResult {
+    let query = [
+      kSecClass: kSecClassGenericPassword,
+      kSecAttrService: KeychainHelper.claudeCodeService,
       kSecReturnData: true,
       kSecMatchLimit: kSecMatchLimitOne
     ] as CFDictionary
@@ -70,62 +245,43 @@ class KeychainHelper {
     var result: AnyObject?
     let status = SecItemCopyMatching(query, &result)
 
-    guard status == errSecSuccess, let data = result as? Data else {
-      print("Claudius Keychain: Failed to read Claude Code credentials (status: \(status))")
-      return nil
+    guard status == errSecSuccess else {
+      if status == errSecItemNotFound {
+        print("Claudius Keychain: No Claude Code credentials item found")
+        return .notFound
+      }
+      // errSecAuthFailed / errSecUserCanceled: the user declined (or never
+      // answered) the "Always Allow" prompt.
+      return .denied(status)
     }
+
+    guard let data = result as? Data else { return .notFound }
 
     do {
-      let creds = try JSONDecoder().decode(ClaudeCredentials.self, from: data)
-      return (creds, data)
+      let creds = try JSONDecoder().decode(KeychainHelper.ClaudeCredentials.self, from: data)
+      return .found(creds)
     } catch {
       print("Claudius Keychain: Failed to decode Claude Code credentials: \(error)")
-      return nil
+      return .notFound
     }
   }
 
-  /// Writes updated credentials back to the Keychain.
-  private func writeClaudeCredentials(_ creds: ClaudeCredentials) {
-    guard let data = try? JSONEncoder().encode(creds) else { return }
+  // MARK: Refresh
 
-    let query = [
-      kSecClass: kSecClassGenericPassword,
-      kSecAttrService: Self.credentialsService
-    ] as CFDictionary
-
-    let update = [kSecValueData: data] as CFDictionary
-    let status = SecItemUpdate(query, update)
-
-    if status == errSecItemNotFound {
-      let addQuery = [
-        kSecClass: kSecClassGenericPassword,
-        kSecAttrService: Self.credentialsService,
-        kSecValueData: data
-      ] as CFDictionary
-      SecItemAdd(addQuery, nil)
-    }
+  private enum RefreshOutcome {
+    case success(KeychainHelper.ClaudeCredentials)
+    case invalidGrant
+    case transient(String)
   }
 
-  /// Returns a valid access token, refreshing automatically if expired.
-  func readClaudeOAuthToken() async -> String? {
-    guard let (creds, _) = readClaudeCredentials() else { return nil }
-
-    let expiresAtSec = creds.claudeAiOauth.expiresAt / 1000
-    let now = Date().timeIntervalSince1970
-
-    // If the token is still valid (with 60s buffer), return it
-    if expiresAtSec > now + 60 {
-      return creds.claudeAiOauth.accessToken
+  /// Uses the refresh token to obtain a new access token. The result is kept
+  /// in Claudius's own keychain item; "Claude Code-credentials" is never
+  /// written (rewriting it would reset its ACL and race Claude Code's own
+  /// refreshes — the cause of the original repeating prompt loop).
+  private func refresh(creds: KeychainHelper.ClaudeCredentials) async -> RefreshOutcome {
+    guard let url = URL(string: Self.refreshEndpoint) else {
+      return .transient("Token refresh failed (bad endpoint URL)")
     }
-
-    // Token expired or about to expire — refresh it
-    print("Claudius Keychain: Access token expired, refreshing...")
-    return await refreshToken(creds: creds)
-  }
-
-  /// Uses the refresh token to obtain a new access token.
-  private func refreshToken(creds: ClaudeCredentials) async -> String? {
-    guard let url = URL(string: Self.refreshEndpoint) else { return nil }
 
     let defaultScopes = ["user:profile", "user:inference", "user:sessions:claude_code", "user:mcp_servers", "user:file_upload"]
     let scopes = (creds.claudeAiOauth.scopes?.isEmpty == false) ? creds.claudeAiOauth.scopes! : defaultScopes
@@ -158,9 +314,16 @@ class KeychainHelper {
           continue
         }
 
+        // 400/401/403 mean the refresh token itself was rejected (rotated away
+        // or revoked) — retrying won't help; the lineage must be replaced.
+        if [400, 401, 403].contains(httpResponse.statusCode) {
+          print("Claudius Keychain: Refresh token rejected (HTTP \(httpResponse.statusCode))")
+          return .invalidGrant
+        }
+
         guard httpResponse.statusCode == 200 else {
           print("Claudius Keychain: Token refresh failed (HTTP \(httpResponse.statusCode))")
-          return nil
+          return .transient("Token refresh failed (HTTP \(httpResponse.statusCode))")
         }
 
         struct RefreshResponse: Decodable {
@@ -171,22 +334,20 @@ class KeychainHelper {
 
         let refreshed = try JSONDecoder().decode(RefreshResponse.self, from: data)
 
-        // Update the credentials in the Keychain
         var updated = creds
         updated.claudeAiOauth.accessToken = refreshed.access_token
         updated.claudeAiOauth.refreshToken = refreshed.refresh_token
         updated.claudeAiOauth.expiresAt = (Date().timeIntervalSince1970 + refreshed.expires_in) * 1000
-        writeClaudeCredentials(updated)
 
         print("Claudius Keychain: Token refreshed successfully")
-        return refreshed.access_token
+        return .success(updated)
       } catch {
         print("Claudius Keychain: Token refresh error: \(error)")
-        return nil
+        return .transient("Token refresh failed: \(error.localizedDescription)")
       }
     }
 
     print("Claudius Keychain: Token refresh failed after retries")
-    return nil
+    return .transient("Token refresh rate limited — will retry")
   }
 }

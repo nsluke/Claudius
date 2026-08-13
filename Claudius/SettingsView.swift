@@ -183,7 +183,9 @@ struct SettingsView: View {
   }
 
   private func loadKeys() {
-    oauthTokenFound = KeychainHelper.shared.readClaudeCredentials() != nil
+    // Attributes-only presence check — never decrypts Claude Code's item, so
+    // opening Settings can't trigger a keychain prompt.
+    oauthTokenFound = KeychainHelper.shared.claudeCredentialsPresent()
     tidbytToken = KeychainHelper.shared.read(service: "ClaudeTidbyt", account: "TidbytToken") ?? ""
     deviceID    = UserDefaults.standard.string(forKey: "TidbytDeviceID") ?? ""
     tronbytServerURL = UserDefaults.standard.string(forKey: "TronbytServerURL") ?? ""
