@@ -108,6 +108,7 @@ struct ClaudeWebUsageService {
 
         case 401:
           // The token itself is bad. A different host won't fix that.
+          print("Claudius Web: \(endpoint) — OAuth token rejected (HTTP 401)")
           return .unauthorized
 
         case 429:

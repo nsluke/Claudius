@@ -207,12 +207,13 @@ struct MenuBarStylePreview: View {
 
   private static let sampleSession: Double = 0.45
 
-  /// Three samples so the picker shows the same layout the live menu bar uses
-  /// on an account that reports a model-scoped weekly cap.
+  /// Two samples: the picker segments are ~75pt wide, and a three-up
+  /// "Bars + numbers" sample needs ~95pt and truncates. Two also matches what
+  /// most accounts actually see, so the preview doesn't advertise a compact
+  /// horizontal layout the user's menu bar won't use.
   private static let sample: [MenuBarDatum] = [
-    MenuBarDatum(id: "session",      pct: 0.45, color: Color(hex: UsageBucket.sessionHex)),
-    MenuBarDatum(id: "weekly",       pct: 0.70, color: Color(hex: UsageBucket.weeklyAllHex)),
-    MenuBarDatum(id: "weekly:fable", pct: 0.20, color: Color(hex: UsageBucket.weeklyScopedHex)),
+    MenuBarDatum(id: "session", pct: 0.45, color: Color(hex: UsageBucket.sessionHex)),
+    MenuBarDatum(id: "weekly",  pct: 0.70, color: Color(hex: UsageBucket.weeklyAllHex)),
   ]
 
   var body: some View {
@@ -283,6 +284,40 @@ class AppState: ObservableObject {
       .sink { [weak self] _ in self?.performSync(force: false) }
   }
 
+  /// Utilization per bucket id, as pushed to the device.
+  static func bucketUtilizations(_ stats: UsageStats) -> [String: Double] {
+    Dictionary(
+      stats.buckets.map { ($0.id, $0.utilization) },
+      uniquingKeysWith: { first, _ in first }
+    )
+  }
+
+  /// Whether this sync warrants a Tidbyt push. Pure, so the throttle is
+  /// testable — the previous version gated on the 5-hour value alone, which
+  /// meant a weekly-only change never reached the device.
+  static func shouldPush(
+    stats: UsageStats,
+    force: Bool,
+    lastPushedBuckets: [String: Double],
+    lastPushedTokens: Int
+  ) -> Bool {
+    guard stats.buckets.isEmpty else {
+      // Web mode: push if the set of buckets changed, or any one of them
+      // moved by at least 1 point.
+      let current = bucketUtilizations(stats)
+      if force || Set(current.keys) != Set(lastPushedBuckets.keys) { return true }
+      return current.contains { id, pct in
+        guard let previous = lastPushedBuckets[id] else { return true }
+        return abs(pct - previous) >= 1.0
+      }
+    }
+
+    // Local mode: push if tokens changed by at least 1%
+    let tokenDiff = abs(stats.tokens - lastPushedTokens)
+    let percentChange = lastPushedTokens == 0 ? 1.0 : Double(tokenDiff) / Double(lastPushedTokens)
+    return force || percentChange > 0.01
+  }
+
   /// Fetches usage — tries OAuth API first, falls back to local JSONL.
   /// Then pushes to Tidbyt if credentials are set.
   func performSync(force: Bool = false) {
@@ -309,29 +344,13 @@ class AppState: ObservableObject {
 
       guard let stats else { return }
 
-      let currentBuckets = Dictionary(
-        stats.buckets.map { ($0.id, $0.utilization) },
-        uniquingKeysWith: { first, _ in first }
+      let currentBuckets = Self.bucketUtilizations(stats)
+      let shouldPush = Self.shouldPush(
+        stats: stats,
+        force: force,
+        lastPushedBuckets: self.lastPushedBuckets,
+        lastPushedTokens: self.lastPushedTokens
       )
-
-      let shouldPush: Bool
-      if !stats.buckets.isEmpty {
-        // Web mode: push if the set of buckets changed, or any one of them
-        // moved by at least 1 point.
-        if force || Set(currentBuckets.keys) != Set(self.lastPushedBuckets.keys) {
-          shouldPush = true
-        } else {
-          shouldPush = currentBuckets.contains { id, pct in
-            guard let previous = self.lastPushedBuckets[id] else { return true }
-            return abs(pct - previous) >= 1.0
-          }
-        }
-      } else {
-        // Local mode: push if tokens changed by at least 1%
-        let tokenDiff = abs(stats.tokens - self.lastPushedTokens)
-        let percentChange = self.lastPushedTokens == 0 ? 1.0 : Double(tokenDiff) / Double(self.lastPushedTokens)
-        shouldPush = force || percentChange > 0.01
-      }
 
       if shouldPush {
         let pushed = await TidbytManager.push(stats: stats)

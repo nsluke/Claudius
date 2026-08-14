@@ -12,7 +12,13 @@ def alerted(fraction, base_color):
 
 def main(config):
     session_pct_raw = config.get("session_pct", "")
-    is_web = session_pct_raw != ""
+    weekly_raw = config.get("weekly_pct", "")
+    scoped_raw = config.get("scoped1_pct", "")
+
+    # Web mode if ANY window was reported. Keying this off session_pct alone
+    # discarded a weekly or model-scoped cap whenever the session window was
+    # missing, and fell through to rendering empty local-mode bars.
+    is_web = session_pct_raw != "" or weekly_raw != "" or scoped_raw != ""
 
     # Bars are collected rather than hardcoded in pairs, so an absent bucket is
     # omitted entirely. That matters here: the `max(..., 1)` floor below would
@@ -20,15 +26,15 @@ def main(config):
     bars = []
 
     if is_web:
-        session_pct = int(session_pct_raw)
-        s_pct = min(session_pct / 100.0, 1.0) if session_pct > 0 else 0.0
-        bars.append({
-            "pct": s_pct,
-            "color": alerted(s_pct, SESSION_COLOR),
-            "label": str(session_pct) + "%",
-        })
+        if session_pct_raw != "":
+            session_pct = int(session_pct_raw)
+            s_pct = min(session_pct / 100.0, 1.0) if session_pct > 0 else 0.0
+            bars.append({
+                "pct": s_pct,
+                "color": alerted(s_pct, SESSION_COLOR),
+                "label": str(session_pct) + "%",
+            })
 
-        weekly_raw = config.get("weekly_pct", "")
         if weekly_raw != "":
             weekly_pct = int(weekly_raw)
             w_pct = min(weekly_pct / 100.0, 1.0) if weekly_pct > 0 else 0.0
@@ -38,7 +44,6 @@ def main(config):
                 "label": str(weekly_pct) + "%",
             })
 
-        scoped_raw = config.get("scoped1_pct", "")
         if scoped_raw != "":
             scoped_pct = int(scoped_raw)
             c_pct = min(scoped_pct / 100.0, 1.0) if scoped_pct > 0 else 0.0

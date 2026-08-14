@@ -181,10 +181,13 @@ struct OAuthUsageResponse: Decodable {
 
     // The CLI's control-protocol variant of this payload wraps everything in
     // `rate_limits`. Unwrap it transparently so the same decoder works if the
-    // HTTP endpoint ever adopts that envelope.
+    // HTTP endpoint ever adopts that envelope — but only when the nested object
+    // actually carries usage data. A `rate_limits` key holding something else
+    // (say, request-rate config) must not swallow the real response.
     if let key = AnyCodingKey(stringValue: "rate_limits"),
        container.contains(key),
-       let inner = try? container.decode(OAuthUsageResponse.self, forKey: key) {
+       let inner = try? container.decode(OAuthUsageResponse.self, forKey: key),
+       !inner.windows.isEmpty || !inner.limits.isEmpty {
       self = inner
       return
     }
@@ -205,10 +208,12 @@ struct OAuthUsageResponse: Decodable {
       // for free.
       guard let window = try? container.decode(UsageWindow.self, forKey: key) else { continue }
 
+      // Kept even when `utilization` is nil: the window may still carry a
+      // `resets_at` that the per-field fallback in merge() needs. Buckets are
+      // only *created* from a non-nil utilization.
+      windows[name] = window
       if window.utilization == nil {
         unmappedKeys.append(name)
-      } else {
-        windows[name] = window
       }
     }
   }
@@ -267,12 +272,19 @@ extension UsageBucket {
             let pct = entry.percent
       else { continue }
 
+      let key = rawName.lowercased()
+
+      // Per-field fallback, same as the session and weekly windows get: a
+      // migrating account can carry the percentage in limits[] and the reset
+      // time only on the matching flat key.
+      let flatKey = "seven_day_" + key.replacingOccurrences(of: " ", with: "_")
       let resetsAt = parseISO8601(entry.resets_at)
+        ?? parseISO8601(response.windows[flatKey]?.resets_at)
+
       // Accounts that aren't eligible for a model still get an entry for it,
       // zeroed with no reset time. Showing that as a real 0% bar is noise.
       if pct == 0 && resetsAt == nil { continue }
 
-      let key = rawName.lowercased()
       guard !seen.contains(key) else { continue }
       seen.insert(key)
 
@@ -288,13 +300,18 @@ extension UsageBucket {
     }
 
     // Legacy fallback: flat `seven_day_<model>` keys, for accounts that haven't
-    // been migrated to `limits[]`. Sorted for deterministic ordering.
-    for name in response.windows.keys.sorted() where name.hasPrefix("seven_day_") {
+    // been migrated to `limits[]`. Skipped entirely once the server speaks
+    // `limits[]`, which is authoritative — otherwise a non-model window such as
+    // `seven_day_oauth_apps` would be promoted to a phantom "Oauth Apps" cap.
+    // Sorted for deterministic ordering.
+    for name in response.limits.isEmpty ? response.windows.keys.sorted() : []
+    where name.hasPrefix("seven_day_") {
       guard let window = response.windows[name], let pct = window.utilization else { continue }
 
       let display = titleCased(String(name.dropFirst("seven_day_".count)))
       let key = display.lowercased()
-      guard !seen.contains(key) else { continue }
+      // A bare "seven_day_" key would otherwise yield a blank-labelled bucket.
+      guard !key.isEmpty, !seen.contains(key) else { continue }
 
       let resetsAt = parseISO8601(window.resets_at)
       if pct == 0 && resetsAt == nil { continue }
@@ -313,9 +330,15 @@ extension UsageBucket {
 
     // Preferred models first, then by descending utilization.
     let preference = scopedPreference.map { $0.lowercased() }
+    // Matched by containment so a full product name ("Claude Fable 4.5") still
+    // ranks against the short name in the preference list.
+    func rank(_ displayName: String) -> Int {
+      let lower = displayName.lowercased()
+      return preference.firstIndex { lower.contains($0) } ?? Int.max
+    }
     scoped.sort { a, b in
-      let ra = preference.firstIndex(of: a.displayName.lowercased()) ?? Int.max
-      let rb = preference.firstIndex(of: b.displayName.lowercased()) ?? Int.max
+      let ra = rank(a.displayName)
+      let rb = rank(b.displayName)
       if ra != rb { return ra < rb }
       if a.utilization != b.utilization { return a.utilization > b.utilization }
       return a.displayName < b.displayName

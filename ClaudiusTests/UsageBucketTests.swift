@@ -19,9 +19,30 @@ final class UsageBucketTests: XCTestCase {
     UsageBucket.merge(from: try decode(json, file: file, line: line))
   }
 
+  /// buildStats reads TokenLimit/CostLimit and merge reads ScopedBucketPreference
+  /// from the shared domain, which on a developer machine is the user's real
+  /// preferences. Save, neutralize, and restore all three so the suite is
+  /// deterministic and non-destructive.
+  private static let managedDefaults = ["ScopedBucketPreference", "TokenLimit", "CostLimit"]
+  private var savedDefaults: [String: Any] = [:]
+
   override func setUp() {
     super.setUp()
-    UserDefaults.standard.removeObject(forKey: "ScopedBucketPreference")
+    let defaults = UserDefaults.standard
+    savedDefaults = [:]
+    for key in Self.managedDefaults {
+      if let value = defaults.object(forKey: key) { savedDefaults[key] = value }
+      defaults.removeObject(forKey: key)
+    }
+  }
+
+  override func tearDown() {
+    let defaults = UserDefaults.standard
+    for key in Self.managedDefaults {
+      defaults.set(savedDefaults[key], forKey: key)   // nil removes the key
+    }
+    savedDefaults = [:]
+    super.tearDown()
   }
 
   // MARK: - Today's shape
@@ -373,5 +394,256 @@ final class UsageBucketTests: XCTestCase {
     XCTAssertEqual(UsageBucket.shortLabel(for: "Fable"), "Fable")
     XCTAssertEqual(UsageBucket.shortLabel(for: "Some Very Long Model"), "SomeV")
     XCTAssertEqual(UsageBucket.shortLabel(for: "GPT-4.1"), "GPT41")
+  }
+
+  // MARK: - Discriminating cases
+  //
+  // The tests below exist because a review found the originals passed even with
+  // the logic mutated. Each one fails if its specific guard is removed.
+
+  /// The placeholder filter is `percent == 0 && resetsAt == nil`. A genuine 0%
+  /// that HAS a reset time is real data and must survive — without this case,
+  /// flipping the `&&` to `||` goes unnoticed.
+  func testGenuineZeroPercentWithResetTimeIsKept() throws {
+    let result = try buckets("""
+    {
+      "five_hour": { "utilization": 45.0, "resets_at": null },
+      "limits": [
+        { "kind": "weekly_scoped", "group": "weekly", "percent": 0,
+          "resets_at": "2026-08-18T00:00:00Z",
+          "scope": { "model": { "display_name": "Fable" } } }
+      ]
+    }
+    """)
+
+    let scoped = try XCTUnwrap(result.first { $0.role == .weeklyScoped })
+    XCTAssertEqual(scoped.utilization, 0, "a fresh weekly window really is at 0%")
+    XCTAssertNotNil(scoped.resetsAt)
+  }
+
+  /// Same guard, legacy flat-key path.
+  func testLegacyFlatPlaceholderIsDroppedButGenuineZeroIsKept() throws {
+    let dropped = try buckets("""
+    { "five_hour": { "utilization": 45.0, "resets_at": null },
+      "seven_day_fable": { "utilization": 0, "resets_at": null } }
+    """)
+    XCTAssertFalse(dropped.contains { $0.role == .weeklyScoped })
+
+    let kept = try buckets("""
+    { "five_hour": { "utilization": 45.0, "resets_at": null },
+      "seven_day_fable": { "utilization": 0, "resets_at": "2026-08-18T00:00:00Z" } }
+    """)
+    XCTAssertTrue(kept.contains { $0.role == .weeklyScoped })
+  }
+
+  /// Forward compatibility: if the server drops or renames `kind` but still
+  /// sends `group: "weekly"` with a model scope, the cap must still surface.
+  func testScopedDetectedFromGroupWhenKindIsUnrecognized() throws {
+    let result = try buckets("""
+    {
+      "limits": [
+        { "kind": "weekly_model_v2", "group": "weekly", "percent": 64,
+          "resets_at": "2026-08-18T00:00:00Z",
+          "scope": { "model": { "display_name": "Fable" } } }
+      ]
+    }
+    """)
+
+    let scoped = try XCTUnwrap(result.first { $0.role == .weeklyScoped })
+    XCTAssertEqual(scoped.displayName, "Fable")
+    XCTAssertEqual(scoped.utilization, 64)
+  }
+
+  /// `weekly_all` has no model scope and must not be mistaken for a model cap.
+  func testWeeklyAllIsNotTreatedAsScoped() throws {
+    let result = try buckets("""
+    { "limits": [ { "kind": "weekly_all", "group": "weekly", "percent": 70,
+                    "resets_at": "2026-08-18T00:00:00Z" } ] }
+    """)
+
+    XCTAssertEqual(result.count, 1)
+    XCTAssertEqual(result[0].role, .weeklyAll)
+  }
+
+  /// The API emits fractional seconds; without this the primary formatter is
+  /// never the one that succeeds and could be deleted unnoticed.
+  func testFractionalSecondsTimestampParses() throws {
+    let result = try buckets("""
+    { "five_hour": { "utilization": 45.0, "resets_at": "2026-08-18T00:00:00.000Z" } }
+    """)
+
+    XCTAssertNotNil(result[0].resetsAt, "fractional-seconds timestamps must parse")
+  }
+
+  /// A `rate_limits` key that isn't a usage envelope must not swallow the
+  /// real response.
+  func testNonEnvelopeRateLimitsKeyIsIgnored() throws {
+    let result = try buckets("""
+    {
+      "five_hour": { "utilization": 45.0, "resets_at": null },
+      "seven_day": { "utilization": 70.0, "resets_at": null },
+      "rate_limits": { "requests_per_minute": 50 }
+    }
+    """)
+
+    XCTAssertEqual(result.count, 2, "the top-level windows must still be read")
+  }
+
+  /// Once the server speaks `limits[]`, flat `seven_day_*` keys are not model
+  /// caps — promoting them invents buckets like "Oauth Apps".
+  func testFlatKeysAreNotPromotedWhenLimitsArePresent() throws {
+    let result = try buckets("""
+    {
+      "five_hour": { "utilization": 45.0, "resets_at": null },
+      "seven_day_oauth_apps": { "utilization": 3.0, "resets_at": "2026-08-18T00:00:00Z" },
+      "limits": [ { "kind": "session", "group": "session", "percent": 45, "resets_at": null } ]
+    }
+    """)
+
+    XCTAssertFalse(result.contains { $0.displayName.lowercased().contains("oauth") })
+  }
+
+  func testBareSevenDayPrefixDoesNotYieldBlankBucket() throws {
+    let result = try buckets("""
+    { "five_hour": { "utilization": 45.0, "resets_at": null },
+      "seven_day_": { "utilization": 42.0, "resets_at": "2026-08-18T00:00:00Z" } }
+    """)
+
+    XCTAssertFalse(result.contains { $0.displayName.isEmpty })
+  }
+
+  /// Preference is matched by containment, so a full product name still ranks.
+  func testFullProductNameStillMatchesPreference() throws {
+    let result = try buckets("""
+    {
+      "limits": [
+        { "kind": "weekly_scoped", "group": "weekly", "percent": 90,
+          "resets_at": "2026-08-18T00:00:00Z",
+          "scope": { "model": { "display_name": "Zephyr" } } },
+        { "kind": "weekly_scoped", "group": "weekly", "percent": 20,
+          "resets_at": "2026-08-18T00:00:00Z",
+          "scope": { "model": { "display_name": "Claude Fable 4.5" } } }
+      ]
+    }
+    """)
+
+    let scoped = result.filter { $0.role == .weeklyScoped }
+    XCTAssertEqual(scoped.first?.displayName, "Claude Fable 4.5",
+                   "\"Fable\" in the preference list should match the full product name")
+  }
+
+  /// A window whose utilization is null still carries a usable reset time.
+  func testNullUtilizationWindowStillSuppliesResetTime() throws {
+    let result = try buckets("""
+    {
+      "five_hour": { "utilization": null, "resets_at": "2026-08-13T20:00:00Z" },
+      "limits": [ { "kind": "session", "group": "session", "percent": 47, "resets_at": null } ]
+    }
+    """)
+
+    XCTAssertEqual(result[0].utilization, 47)
+    XCTAssertNotNil(result[0].resetsAt, "the flat window's reset time should still be used")
+  }
+
+  /// Scoped buckets get the same per-field fallback the session window gets.
+  func testScopedBucketBorrowsResetTimeFromFlatKey() throws {
+    let result = try buckets("""
+    {
+      "seven_day_fable": { "utilization": 11, "resets_at": "2026-08-18T00:00:00Z" },
+      "limits": [
+        { "kind": "weekly_scoped", "group": "weekly", "percent": 71, "resets_at": null,
+          "scope": { "model": { "display_name": "Fable" } } }
+      ]
+    }
+    """)
+
+    let scoped = try XCTUnwrap(result.first { $0.role == .weeklyScoped })
+    XCTAssertEqual(scoped.utilization, 71, "limits[] supplies the value")
+    XCTAssertNotNil(scoped.resetsAt, "the flat key supplies the reset time")
+  }
+
+  // MARK: - Push throttle
+
+  private func webStats(_ pairs: [(String, Double)]) -> UsageStats {
+    var stats = UsageStats()
+    stats.dataSource = .web
+    stats.buckets = pairs.map { id, pct in
+      UsageBucket(id: id, role: id == "session" ? .session : .weeklyAll,
+                  displayName: id, shortLabel: id, utilization: pct,
+                  resetsAt: nil, severity: nil)
+    }
+    return stats
+  }
+
+  /// The bug this replaced: pushes were gated on the 5-hour value alone, so a
+  /// weekly-only change never reached the device.
+  func testWeeklyOnlyChangeStillTriggersAPush() {
+    let stats = webStats([("session", 45), ("weekly", 85)])
+    let shouldPush = AppState.shouldPush(
+      stats: stats, force: false,
+      lastPushedBuckets: ["session": 45, "weekly": 70],
+      lastPushedTokens: 0
+    )
+    XCTAssertTrue(shouldPush, "weekly moved 70 -> 85 while session sat still")
+  }
+
+  func testUnchangedBucketsDoNotPush() {
+    let stats = webStats([("session", 45), ("weekly", 70)])
+    XCTAssertFalse(AppState.shouldPush(
+      stats: stats, force: false,
+      lastPushedBuckets: ["session": 45, "weekly": 70],
+      lastPushedTokens: 0
+    ))
+  }
+
+  func testSubOnePointDriftDoesNotPush() {
+    let stats = webStats([("session", 45.4), ("weekly", 70.2)])
+    XCTAssertFalse(AppState.shouldPush(
+      stats: stats, force: false,
+      lastPushedBuckets: ["session": 45, "weekly": 70],
+      lastPushedTokens: 0
+    ))
+  }
+
+  /// A model-scoped cap appearing or disappearing changes the layout, so it
+  /// must push even if the numbers we already had didn't move.
+  func testBucketSetChangeTriggersAPush() {
+    let stats = webStats([("session", 45), ("weekly", 70), ("weekly:fable", 12)])
+    XCTAssertTrue(AppState.shouldPush(
+      stats: stats, force: false,
+      lastPushedBuckets: ["session": 45, "weekly": 70],
+      lastPushedTokens: 0
+    ))
+  }
+
+  func testFirstSyncPushes() {
+    let stats = webStats([("session", 45)])
+    XCTAssertTrue(AppState.shouldPush(
+      stats: stats, force: false, lastPushedBuckets: [:], lastPushedTokens: 0
+    ))
+  }
+
+  func testForceAlwaysPushes() {
+    let stats = webStats([("session", 45), ("weekly", 70)])
+    XCTAssertTrue(AppState.shouldPush(
+      stats: stats, force: true,
+      lastPushedBuckets: ["session": 45, "weekly": 70],
+      lastPushedTokens: 0
+    ))
+  }
+
+  func testLocalModeStillThrottlesOnTokens() {
+    var stats = UsageStats()
+    stats.dataSource = .local
+    stats.tokens = 100_500
+
+    XCTAssertFalse(AppState.shouldPush(
+      stats: stats, force: false, lastPushedBuckets: [:], lastPushedTokens: 100_000
+    ), "0.5% token change is below the 1% threshold")
+
+    stats.tokens = 120_000
+    XCTAssertTrue(AppState.shouldPush(
+      stats: stats, force: false, lastPushedBuckets: [:], lastPushedTokens: 100_000
+    ))
   }
 }
