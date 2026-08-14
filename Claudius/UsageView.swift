@@ -34,15 +34,7 @@ struct UsageView: View {
     min(appState.currentUsage.cost / costLimit, 1.0)
   }
 
-  private var sevenDayPct: Double {
-    if let webPct = appState.currentUsage.sevenDayUtilization {
-      return min(webPct / 100.0, 1.0)
-    }
-    return 0
-  }
-
-  private var tokenColor: Color { tokenPct < 0.9 ? Color(hex: "#4caf50") : .red }
-  private var sevenDayColor: Color { sevenDayPct < 0.9 ? Color(hex: "#d97757") : .red }
+  private var tokenColor: Color { tokenPct < 0.9 ? Color(hex: UsageBucket.sessionHex) : .red }
 
   private var formattedTokens: String {
     let t = appState.currentUsage.tokens
@@ -62,11 +54,15 @@ struct UsageView: View {
     return h > 0 ? "\(h)h \(m)m" : "\(m)m"
   }
 
+  /// Weekly windows can be days out, so days are broken out rather than
+  /// rendering "98h 12m".
   private func formatTimeUntil(_ date: Date) -> String {
     let seconds = date.timeIntervalSinceNow
     if seconds <= 0 { return "Now" }
-    let h = Int(seconds) / 3600
+    let d = Int(seconds) / 86400
+    let h = Int(seconds) / 3600 % 24
     let m = Int(seconds) / 60 % 60
+    if d > 0 { return "\(d)d \(h)h" }
     return h > 0 ? "\(h)h \(m)m" : "\(m)m"
   }
 
@@ -84,7 +80,7 @@ struct UsageView: View {
       HStack {
         Image(systemName: "terminal.fill")
           .foregroundStyle(Color(hex: "#d97757"))
-        Text("Claude Code · 5h window")
+        Text("Claude Code · usage")
           .font(.headline)
         Spacer()
 
@@ -121,30 +117,30 @@ struct UsageView: View {
 
       // Metrics
       VStack(spacing: 16) {
-        MetricRow(
-          label: "Current Session",
-          value: appState.currentUsage.fiveHourUtilization != nil
-            ? "\(Int(appState.currentUsage.fiveHourUtilization!))%"
-            : formattedTokens,
-          limit: appState.currentUsage.fiveHourUtilization != nil
-            ? "100%"
-            : (tokenLimit >= 1_000_000
-              ? String(format: "%.0fM", Double(tokenLimit) / 1_000_000)
-              : String(format: "%.0fk", Double(tokenLimit) / 1_000)),
-          pct: tokenPct,
-          color: tokenColor,
-          rightLabel: appState.currentUsage.fiveHourResetsAt.map { "Resets in \(formatTimeUntil($0))" }
-        )
-
-        if appState.currentUsage.sevenDayUtilization != nil {
+        if appState.currentUsage.buckets.isEmpty {
+          // Local-log mode — no server-reported windows, so show the estimate.
           MetricRow(
-            label: "Weekly Limit",
-            value: "\(Int(appState.currentUsage.sevenDayUtilization!))%",
-            limit: "100%",
-            pct: sevenDayPct,
-            color: sevenDayColor,
-            rightLabel: appState.currentUsage.sevenDayResetsAt.map { "Resets in \(formatTimeUntil($0))" }
+            label: "Current Session",
+            value: formattedTokens,
+            limit: tokenLimit >= 1_000_000
+              ? String(format: "%.0fM", Double(tokenLimit) / 1_000_000)
+              : String(format: "%.0fk", Double(tokenLimit) / 1_000),
+            pct: tokenPct,
+            color: tokenColor
           )
+        } else {
+          // One row per window the server reported: session, account-wide
+          // weekly, then any model-scoped weekly caps.
+          ForEach(appState.currentUsage.buckets) { bucket in
+            MetricRow(
+              label: bucket.role == .session ? "Current Session" : bucket.displayName,
+              value: "\(Int(bucket.utilization.rounded()))%",
+              limit: "100%",
+              pct: bucket.fraction,
+              color: bucket.color,
+              rightLabel: bucket.resetsAt.map { "Resets in \(formatTimeUntil($0))" }
+            )
+          }
         }
 
         if appState.currentUsage.dataSource == .local {
@@ -338,17 +334,5 @@ private struct TokenTimeSeriesChart: View {
   }
 }
 
-// MARK: - Hex Color helper
-
-private extension Color {
-  init(hex: String) {
-    let h = hex.trimmingCharacters(in: CharacterSet(charactersIn: "#"))
-    var rgb: UInt64 = 0
-    Scanner(string: h).scanHexInt64(&rgb)
-    self.init(
-      red:   Double((rgb >> 16) & 0xFF) / 255,
-      green: Double((rgb >> 8)  & 0xFF) / 255,
-      blue:  Double( rgb        & 0xFF) / 255
-    )
-  }
-}
+// Color(hex:) now lives in UsageBucket.swift so the menu bar, dashboard, and
+// bucket palette all share one definition.

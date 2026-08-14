@@ -5,6 +5,10 @@
 //  Fetches usage data from the Anthropic OAuth API using Claude Code's
 //  OAuth token stored in the macOS Keychain.
 //
+//  The response shape is treated as unstable on purpose — see UsageBucket.swift
+//  for why. This file's job is transport and diagnostics; all decoding and
+//  bucket merging lives in the domain model so it can be unit-tested.
+//
 
 import Foundation
 
@@ -14,26 +18,29 @@ enum UsageDataSource: String {
   case local = "local logs"
 }
 
-// MARK: - API Response Models
-
-/// Usage period from /api/oauth/usage
-private struct UsagePeriod: Decodable {
-  let utilization: Double  // percentage 0–100
-  let resets_at: String    // ISO 8601 timestamp
-}
-
-/// Full response from /api/oauth/usage
-private struct OAuthUsageResponse: Decodable {
-  let five_hour: UsagePeriod?
-  let seven_day: UsagePeriod?
-
-}
-
 // MARK: - Web Usage Service
 
 struct ClaudeWebUsageService {
 
-  private static let endpoint = "https://platform.claude.com/api/oauth/usage"
+  /// The host Claudius has always used. Kept primary because it works today.
+  private static let primaryEndpoint = "https://platform.claude.com/api/oauth/usage"
+  /// Overwhelmingly the more common host in the wild — used only as a fallback,
+  /// so a deprecation of the primary degrades instead of going dark.
+  private static let fallbackEndpoint = "https://api.anthropic.com/api/oauth/usage"
+
+  private static var userAgent: String {
+    let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"
+    return "Claudius/\(version) (macOS)"
+  }
+
+  private enum FetchOutcome {
+    case ok(Data)
+    /// Bad or expired token — trying another host won't help.
+    case unauthorized
+    /// This host is unhappy; the other one might not be.
+    case tryOtherHost(String)
+    case failed(String)
+  }
 
   /// Attempts to fetch usage stats using the OAuth token from Claude Code's Keychain entry.
   /// Returns nil if the token is missing or the fetch fails.
@@ -45,12 +52,41 @@ struct ClaudeWebUsageService {
       return nil
     }
 
-    guard let url = URL(string: endpoint) else { return nil }
+    for endpoint in [primaryEndpoint, fallbackEndpoint] {
+      switch await fetch(endpoint: endpoint, token: accessToken) {
+      case .ok(let data):
+        if endpoint != primaryEndpoint {
+          print("Claudius Web: primary host failed; answered by \(endpoint)")
+        }
+        dumpRawResponseIfRequested(data)
+        return decode(data)
+
+      case .unauthorized:
+        return nil
+
+      case .tryOtherHost(let reason):
+        print("Claudius Web: \(endpoint) — \(reason); trying fallback host")
+        continue
+
+      case .failed(let reason):
+        print("Claudius Web: \(endpoint) — \(reason)")
+        return nil
+      }
+    }
+
+    return nil
+  }
+
+  // MARK: - Transport
+
+  private static func fetch(endpoint: String, token: String) async -> FetchOutcome {
+    guard let url = URL(string: endpoint) else { return .failed("bad endpoint URL") }
 
     var request = URLRequest(url: url)
     request.httpMethod = "GET"
-    request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+    request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
     request.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
+    request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
 
     // Retry up to 3 times with backoff for rate limiting
     for attempt in 0..<3 {
@@ -63,49 +99,69 @@ struct ClaudeWebUsageService {
         let (data, response) = try await URLSession.shared.data(for: request)
 
         guard let httpResponse = response as? HTTPURLResponse else {
-          print("Claudius Web: Not an HTTP response")
-          return nil
+          return .failed("not an HTTP response")
         }
 
-        if httpResponse.statusCode == 401 || httpResponse.statusCode == 403 {
-          print("Claudius Web: OAuth token expired or invalid (HTTP \(httpResponse.statusCode))")
-          return nil
-        }
+        switch httpResponse.statusCode {
+        case 200:
+          return .ok(data)
 
-        if httpResponse.statusCode == 429 {
+        case 401:
+          // The token itself is bad. A different host won't fix that.
+          return .unauthorized
+
+        case 429:
           print("Claudius Web: Rate limited, retrying (attempt \(attempt + 1)/3)...")
           continue
+
+        case 403, 404, 500...599:
+          return .tryOtherHost("HTTP \(httpResponse.statusCode)")
+
+        default:
+          return .failed("HTTP \(httpResponse.statusCode)")
         }
-
-        guard httpResponse.statusCode == 200 else {
-          print("Claudius Web: Usage endpoint returned HTTP \(httpResponse.statusCode)")
-          return nil
-        }
-
-        let usage = try JSONDecoder().decode(OAuthUsageResponse.self, from: data)
-        return buildStats(from: usage)
-
       } catch {
-        print("Claudius Web: Failed to fetch usage: \(error)")
-        return nil
+        return .tryOtherHost("request error: \(error.localizedDescription)")
       }
     }
 
-    print("Claudius Web: Usage fetch failed after 3 retries (rate limited)")
-    return nil
+    return .failed("rate limited after 3 retries")
   }
 
-  /// Converts the API response into UsageStats.
-  private static func buildStats(from usage: OAuthUsageResponse) -> UsageStats {
+  // MARK: - Decoding
+
+  static func decode(_ data: Data) -> UsageStats? {
+    do {
+      let response = try JSONDecoder().decode(OAuthUsageResponse.self, from: data)
+      return buildStats(from: response)
+    } catch {
+      print("Claudius Web: Failed to decode usage response: \(error)")
+      return nil
+    }
+  }
+
+  /// Converts the decoded response into UsageStats.
+  static func buildStats(from response: OAuthUsageResponse) -> UsageStats {
     var stats = UsageStats()
     stats.dataSource = .web
+    stats.buckets = UsageBucket.merge(from: response)
+
+    // Legacy convenience fields. `fiveHourUtilization != nil` is the app-wide
+    // "we have web data" discriminator, so these stay populated.
+    let session = stats.buckets.first { $0.role == .session }
+    let weekly  = stats.buckets.first { $0.role == .weeklyAll }
+
+    stats.fiveHourUtilization = session?.utilization
+    stats.fiveHourResetsAt    = session?.resetsAt
+    stats.sevenDayUtilization = weekly?.utilization
+    stats.sevenDayResetsAt    = weekly?.resetsAt
 
     // Read the plan's token limit from UserDefaults (set via SettingsView)
     let tokenLimit = UserDefaults.standard.integer(forKey: "TokenLimit")
     let costLimit = UserDefaults.standard.double(forKey: "CostLimit")
 
-    if let fiveHour = usage.five_hour {
-      let pct = fiveHour.utilization / 100.0
+    if let session {
+      let pct = session.fraction
 
       if tokenLimit > 0 {
         stats.tokens = Int(pct * Double(tokenLimit))
@@ -114,30 +170,58 @@ struct ClaudeWebUsageService {
         stats.cost = pct * costLimit
       }
 
-      if let resetDate = parseISO8601(fiveHour.resets_at) {
-        let windowStart = resetDate.addingTimeInterval(-5 * 60 * 60)
-        stats.oldestMessageDate = windowStart
+      if let resetDate = session.resetsAt {
+        stats.oldestMessageDate = resetDate.addingTimeInterval(-5 * 60 * 60)
         stats.newestMessageDate = Date()
       }
-
-      stats.fiveHourUtilization = fiveHour.utilization
-      stats.fiveHourResetsAt = parseISO8601(fiveHour.resets_at)
     }
 
-    if let sevenDay = usage.seven_day {
-      stats.sevenDayUtilization = sevenDay.utilization
-      stats.sevenDayResetsAt = parseISO8601(sevenDay.resets_at)
-    }
-
-    print("Claudius Web: 5h utilization = \(usage.five_hour?.utilization ?? 0)%, " +
-          "7d utilization = \(usage.seven_day?.utilization ?? 0)%")
-
+    logCensus(stats.buckets, response: response)
     return stats
   }
 
-  private static func parseISO8601(_ string: String) -> Date? {
-    let formatter = ISO8601DateFormatter()
-    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-    return formatter.date(from: string) ?? ISO8601DateFormatter().date(from: string)
+  // MARK: - Diagnostics
+
+  /// Logs what was actually found. Deliberately distinguishes "absent" from
+  /// "zero" — conflating them is what would make a renamed field invisible.
+  private static func logCensus(_ buckets: [UsageBucket], response: OAuthUsageResponse) {
+    let summary = buckets
+      .map { "\($0.displayName)=\(String(format: "%.1f", $0.utilization))%" }
+      .joined(separator: ", ")
+    print("Claudius Web: \(buckets.count) bucket(s): \(summary.isEmpty ? "none" : summary)")
+
+    let consumed: Set<String> = ["five_hour", "seven_day"]
+    let unusedWindows = response.windows.keys.filter {
+      !consumed.contains($0) && !$0.hasPrefix("seven_day_")
+    }
+    if !unusedWindows.isEmpty {
+      print("Claudius Web: ignored unrecognized window key(s): \(unusedWindows.sorted().joined(separator: ", "))")
+    }
+    if !response.unmappedKeys.isEmpty {
+      print("Claudius Web: key(s) with no utilization: \(response.unmappedKeys.sorted().joined(separator: ", "))")
+    }
+  }
+
+  /// Writes the raw response body to ~/Library/Logs/Claudius/ when the hidden
+  /// `DumpUsageJSON` default is set. This is how you capture what your own
+  /// account actually returns:
+  ///   defaults write comm.claudius.app DumpUsageJSON -bool YES
+  private static func dumpRawResponseIfRequested(_ data: Data) {
+    guard UserDefaults.standard.bool(forKey: "DumpUsageJSON") else { return }
+
+    let dir = FileManager.default.homeDirectoryForCurrentUser
+      .appendingPathComponent("Library/Logs/Claudius", isDirectory: true)
+    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+
+    let stamp = ISO8601DateFormatter().string(from: Date())
+      .replacingOccurrences(of: ":", with: "-")
+    let url = dir.appendingPathComponent("usage-\(stamp).json")
+
+    do {
+      try data.write(to: url)
+      print("Claudius Web: wrote raw usage response to \(url.path)")
+    } catch {
+      print("Claudius Web: could not write usage dump: \(error)")
+    }
   }
 }

@@ -157,24 +157,8 @@ struct TidbytManager {
         }
     }()
 
-    // Build pixlet args based on data source
-    var pixletArgs: [String] = []
-
-    if let sessionPct = stats.fiveHourUtilization {
-      // Web mode: pass utilization percentages
-      pixletArgs.append("session_pct=\(Int(sessionPct))")
-      if let weeklyPct = stats.sevenDayUtilization {
-        pixletArgs.append("weekly_pct=\(Int(weeklyPct))")
-      }
-      print("Claudius: pushing session=\(Int(sessionPct))%, weekly=\(Int(stats.sevenDayUtilization ?? 0))%")
-    } else {
-      // Local mode: pass raw cost/tokens
-      pixletArgs.append("usage=\(String(format: "%.2f", stats.cost))")
-      pixletArgs.append("tokens=\(stats.tokens)")
-      if costLimit  > 0 { pixletArgs.append("cost_limit=\(String(format: "%.2f", costLimit))") }
-      if tokenLimit > 0 { pixletArgs.append("token_limit=\(tokenLimit)") }
-      print("Claudius: pushing $\(String(format: "%.4f", stats.cost)), \(stats.tokens) tokens")
-    }
+    let pixletArgs = Self.pixletArgs(for: stats, costLimit: costLimit, tokenLimit: tokenLimit)
+    print("Claudius: pushing \(pixletArgs.joined(separator: " "))")
 
     let tronbytServerURL = (UserDefaults.standard.string(forKey: "TronbytServerURL") ?? "")
       .trimmingCharacters(in: .whitespaces)
@@ -187,6 +171,46 @@ struct TidbytManager {
     }
 
     return allPushed
+  }
+
+  /// Builds the `key=value` list handed to `pixlet render`.
+  ///
+  /// Contract: **an absent key is the only way a `.star` layout can detect
+  /// "no value"** — pixlet stringifies every argument, so passing `scoped1_pct=0`
+  /// would be indistinguishable from a genuine 0%. Never emit a placeholder.
+  ///
+  /// Pure and non-private so the contract can be unit-tested.
+  static func pixletArgs(for stats: UsageStats, costLimit: Double, tokenLimit: Int) -> [String] {
+    var args: [String] = []
+
+    guard stats.buckets.isEmpty else {
+      // Web mode: server-reported percentages.
+      var emittedScoped = false
+      for bucket in stats.buckets {
+        let pct = Int(bucket.utilization.rounded())
+        switch bucket.role {
+        case .session:
+          args.append("session_pct=\(pct)")
+        case .weeklyAll:
+          args.append("weekly_pct=\(pct)")
+        case .weeklyScoped:
+          // 64px of width fits exactly one scoped bar; buckets are already
+          // ordered by preference, so the first one is the one to show.
+          guard !emittedScoped else { continue }
+          emittedScoped = true
+          args.append("scoped1_pct=\(pct)")
+          args.append("scoped1_label=\(bucket.shortLabel)")
+        }
+      }
+      return args
+    }
+
+    // Local mode: raw cost/tokens.
+    args.append("usage=\(String(format: "%.2f", stats.cost))")
+    args.append("tokens=\(stats.tokens)")
+    if costLimit  > 0 { args.append("cost_limit=\(String(format: "%.2f", costLimit))") }
+    if tokenLimit > 0 { args.append("token_limit=\(tokenLimit)") }
+    return args
   }
 
   // MARK: - Tronbyt direct push
