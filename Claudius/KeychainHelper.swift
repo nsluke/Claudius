@@ -81,7 +81,8 @@ final class KeychainHelper: Sendable {
     return SecItemCopyMatching(query, &result) == errSecSuccess
   }
 
-  /// Returns a valid access token, refreshing automatically if expired.
+  /// Returns Claude Code's access token if it is currently valid.
+  /// Never refreshes — see ClaudeTokenProvider for why.
   /// Pass `force: true` (Sync Now) to retry after a denied keychain prompt.
   func readClaudeOAuthToken(force: Bool = false) async -> String? {
     await ClaudeTokenProvider.shared.validAccessToken(force: force)
@@ -93,49 +94,56 @@ final class KeychainHelper: Sendable {
   }
 }
 
+
 // MARK: - Claude token provider
 
-/// Owns all access to Claude OAuth credentials.
+/// Reads Claude Code's OAuth access token. **Read-only, and deliberately does
+/// not refresh.**
 ///
-/// Claude Code's keychain item ("Claude Code-credentials") is treated as
-/// read-only bootstrap material: decrypting another app's item is what raises
-/// the macOS "Always Allow" prompt, and Claude Code resets the item's ACL
-/// whenever it rewrites the item, so any grant is eventually lost. This actor
-/// therefore reads that item as rarely as possible — it keeps its own copy of
-/// the credentials in a Claudius-owned keychain item (which never prompts) and
-/// refreshes that copy independently. It goes back to Claude Code's item only
-/// when its own refresh lineage is rejected (e.g. after a Claude Code
-/// re-login).
+/// Two things were learned the hard way here.
 ///
-/// Acquisition is single-flighted so concurrent polls can't stack prompts, and
-/// after a denied prompt the actor stops touching Claude Code's item until the
-/// user explicitly retries via Sync Now.
+/// 1. Claudius must not *write* Claude Code's Keychain item. Writing is a
+///    separate Keychain permission from reading, so an "Always Allow" grant
+///    never covered it, and every failed write re-prompted — the original
+///    prompt-loop bug.
+///
+/// 2. Claudius must not *refresh* the token either. OAuth refresh tokens here
+///    are single-use with rotation: whoever redeems one invalidates the copy
+///    everybody else holds. With write-back removed, a refresh by Claudius
+///    would rotate the family and leave Claude Code holding a dead refresh
+///    token — breaking the login of the tool Claudius depends on. Refreshing
+///    is Claude Code's job.
+///
+/// So the contract is: read the access token, use it while it is valid, and
+/// when it expires simply wait for Claude Code to refresh it. Callers fall
+/// back to the desktop cache or local logs in the meantime.
 actor ClaudeTokenProvider {
   static let shared = ClaudeTokenProvider()
 
-  private static let refreshEndpoint = "https://platform.claude.com/v1/oauth/token"
-  private static let oauthClientId = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
-  private static let ownService = "Claudius"
-  private static let ownAccount = "ClaudeOAuthCredentials"
+  /// An item this stale means nothing is maintaining it any more — the usual
+  /// cause is that Claude Code is being run through the desktop app, which
+  /// keeps credentials in its own store and never touches this one again.
+  private static let abandonedAfter: TimeInterval = 2 * 24 * 60 * 60
 
   private var cachedCreds: KeychainHelper.ClaudeCredentials?
   private var inFlight: Task<String?, Never>?
   private var claudeCodeReadDenied = false
+  private var cleanedUpLegacyItem = false
   private(set) var lastProblem: String?
 
   func validAccessToken(force: Bool) async -> String? {
     if force { claudeCodeReadDenied = false }
 
-    // Fast path: in-memory token still valid (60s buffer) — no keychain, no network.
+    // Fast path: in-memory token still valid (60s buffer) — no Keychain access.
     if let creds = cachedCreds, Self.isUsable(creds) {
       lastProblem = nil
       return creds.claudeAiOauth.accessToken
     }
 
-    // Single-flight: piggyback on an acquisition already in progress.
+    // Single-flight so concurrent polls can't stack Keychain prompts.
     if let inFlight { return await inFlight.value }
 
-    let task = Task { await self.acquireToken() }
+    let task = Task { self.acquireToken() }
     inFlight = task
     let token = await task.value
     inFlight = nil
@@ -144,33 +152,10 @@ actor ClaudeTokenProvider {
 
   // MARK: Acquisition
 
-  private func acquireToken() async -> String? {
+  private func acquireToken() -> String? {
     lastProblem = nil
+    cleanUpLegacyItemOnce()
 
-    // 1. Our own persisted copy — Claudius owns this item, so reading it never prompts.
-    if let own = loadOwnCredentials() {
-      if Self.isUsable(own) {
-        cachedCreds = own
-        return own.claudeAiOauth.accessToken
-      }
-
-      switch await refresh(creds: own) {
-      case .success(let updated):
-        store(updated)
-        return updated.claudeAiOauth.accessToken
-      case .invalidGrant:
-        // Our lineage is dead (e.g. Claude Code re-login rotated the family).
-        // Discard it and bootstrap fresh from Claude Code's item below.
-        print("Claudius Keychain: Own refresh token rejected, re-bootstrapping from Claude Code")
-        cachedCreds = nil
-        KeychainHelper.shared.delete(service: Self.ownService, account: Self.ownAccount)
-      case .transient(let message):
-        lastProblem = message
-        return nil
-      }
-    }
-
-    // 2. Bootstrap from Claude Code's item — the only read that can prompt.
     if claudeCodeReadDenied {
       lastProblem = "Keychain access denied — use Sync Now to retry"
       return nil
@@ -178,24 +163,15 @@ actor ClaudeTokenProvider {
 
     switch readClaudeCodeItem() {
     case .found(let creds):
-      store(creds)
+      cachedCreds = creds
       if Self.isUsable(creds) {
         return creds.claudeAiOauth.accessToken
       }
-
-      switch await refresh(creds: creds) {
-      case .success(let updated):
-        store(updated)
-        return updated.claudeAiOauth.accessToken
-      case .invalidGrant:
-        cachedCreds = nil
-        KeychainHelper.shared.delete(service: Self.ownService, account: Self.ownAccount)
-        lastProblem = "Claude Code login expired — run `claude` and sign in"
-        return nil
-      case .transient(let message):
-        lastProblem = message
-        return nil
-      }
+      // Expired. Claude Code will refresh it the next time it runs; we just
+      // wait. Say so precisely, because a token that never gets refreshed
+      // means nothing is maintaining this item any more.
+      lastProblem = expiredTokenExplanation()
+      return nil
 
     case .notFound:
       lastProblem = "Claude Code token not found — sign in with `claude` first"
@@ -204,29 +180,43 @@ actor ClaudeTokenProvider {
     case .denied(let status):
       claudeCodeReadDenied = true
       lastProblem = "Keychain access denied — use Sync Now to retry"
-      print("Claudius Keychain: Claude Code credentials read denied (status: \(status)); pausing keychain reads until Sync Now")
+      print("Claudius Keychain: read denied (status: \(status)); pausing until Sync Now")
       return nil
     }
+  }
+
+  /// Distinguishes "expired, will be refreshed shortly" from "nobody has
+  /// touched this item in days, so it is never going to be refreshed".
+  private func expiredTokenExplanation() -> String {
+    guard let modified = claudeCodeItemModifiedAt() else {
+      return "Claude Code token expired — open Claude Code to refresh it"
+    }
+
+    let age = Date().timeIntervalSince(modified)
+    guard age > Self.abandonedAfter else {
+      return "Claude Code token expired — open Claude Code to refresh it"
+    }
+
+    let days = Int(age / 86_400)
+    print("Claudius Keychain: Claude Code has not updated its credentials in \(days) day(s) " +
+          "— if you run Claude Code via the desktop app, that item is no longer maintained")
+    return "Claude Code's Keychain token is \(days)d stale — using the Claude app's usage cache"
   }
 
   private static func isUsable(_ creds: KeychainHelper.ClaudeCredentials) -> Bool {
     creds.claudeAiOauth.expiresAt / 1000 > Date().timeIntervalSince1970 + 60
   }
 
-  private func store(_ creds: KeychainHelper.ClaudeCredentials) {
-    cachedCreds = creds
-    if let data = try? JSONEncoder().encode(creds) {
-      KeychainHelper.shared.save(data, service: Self.ownService, account: Self.ownAccount)
-    }
+  /// Claudius 3.0.2 kept its own copy of the credentials so it could refresh
+  /// independently. That design is gone; remove the leftover item so a stale
+  /// refresh token isn't sitting in the user's Keychain forever.
+  private func cleanUpLegacyItemOnce() {
+    guard !cleanedUpLegacyItem else { return }
+    cleanedUpLegacyItem = true
+    KeychainHelper.shared.delete(service: "Claudius", account: "ClaudeOAuthCredentials")
   }
 
-  private func loadOwnCredentials() -> KeychainHelper.ClaudeCredentials? {
-    guard let json = KeychainHelper.shared.read(service: Self.ownService, account: Self.ownAccount),
-          let data = json.data(using: .utf8) else { return nil }
-    return try? JSONDecoder().decode(KeychainHelper.ClaudeCredentials.self, from: data)
-  }
-
-  // MARK: Claude Code's keychain item (strictly read-only)
+  // MARK: Claude Code's Keychain item (strictly read-only)
 
   private enum ClaudeCodeReadResult {
     case found(KeychainHelper.ClaudeCredentials)
@@ -250,104 +240,32 @@ actor ClaudeTokenProvider {
         print("Claudius Keychain: No Claude Code credentials item found")
         return .notFound
       }
-      // errSecAuthFailed / errSecUserCanceled: the user declined (or never
-      // answered) the "Always Allow" prompt.
       return .denied(status)
     }
 
     guard let data = result as? Data else { return .notFound }
 
     do {
-      let creds = try JSONDecoder().decode(KeychainHelper.ClaudeCredentials.self, from: data)
-      return .found(creds)
+      return .found(try JSONDecoder().decode(KeychainHelper.ClaudeCredentials.self, from: data))
     } catch {
       print("Claudius Keychain: Failed to decode Claude Code credentials: \(error)")
       return .notFound
     }
   }
 
-  // MARK: Refresh
+  /// Attributes-only query — reads the item's modification date without
+  /// decrypting it, so this can never trigger a prompt.
+  private func claudeCodeItemModifiedAt() -> Date? {
+    let query = [
+      kSecClass: kSecClassGenericPassword,
+      kSecAttrService: KeychainHelper.claudeCodeService,
+      kSecReturnAttributes: true,
+      kSecMatchLimit: kSecMatchLimitOne
+    ] as CFDictionary
 
-  private enum RefreshOutcome {
-    case success(KeychainHelper.ClaudeCredentials)
-    case invalidGrant
-    case transient(String)
-  }
-
-  /// Uses the refresh token to obtain a new access token. The result is kept
-  /// in Claudius's own keychain item; "Claude Code-credentials" is never
-  /// written (rewriting it would reset its ACL and race Claude Code's own
-  /// refreshes — the cause of the original repeating prompt loop).
-  private func refresh(creds: KeychainHelper.ClaudeCredentials) async -> RefreshOutcome {
-    guard let url = URL(string: Self.refreshEndpoint) else {
-      return .transient("Token refresh failed (bad endpoint URL)")
-    }
-
-    let defaultScopes = ["user:profile", "user:inference", "user:sessions:claude_code", "user:mcp_servers", "user:file_upload"]
-    let scopes = (creds.claudeAiOauth.scopes?.isEmpty == false) ? creds.claudeAiOauth.scopes! : defaultScopes
-
-    let body: [String: String] = [
-      "grant_type": "refresh_token",
-      "refresh_token": creds.claudeAiOauth.refreshToken,
-      "client_id": Self.oauthClientId,
-      "scope": scopes.joined(separator: " ")
-    ]
-
-    var request = URLRequest(url: url)
-    request.httpMethod = "POST"
-    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-    request.httpBody = try? JSONEncoder().encode(body)
-
-    // Retry up to 3 times with backoff for rate limiting
-    for attempt in 0..<3 {
-      if attempt > 0 {
-        let delay = UInt64(pow(2.0, Double(attempt))) * 1_000_000_000
-        try? await Task.sleep(nanoseconds: delay)
-      }
-
-      do {
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let httpResponse = response as? HTTPURLResponse else { continue }
-
-        if httpResponse.statusCode == 429 {
-          print("Claudius Keychain: Token refresh rate limited, retrying (attempt \(attempt + 1)/3)...")
-          continue
-        }
-
-        // 400/401/403 mean the refresh token itself was rejected (rotated away
-        // or revoked) — retrying won't help; the lineage must be replaced.
-        if [400, 401, 403].contains(httpResponse.statusCode) {
-          print("Claudius Keychain: Refresh token rejected (HTTP \(httpResponse.statusCode))")
-          return .invalidGrant
-        }
-
-        guard httpResponse.statusCode == 200 else {
-          print("Claudius Keychain: Token refresh failed (HTTP \(httpResponse.statusCode))")
-          return .transient("Token refresh failed (HTTP \(httpResponse.statusCode))")
-        }
-
-        struct RefreshResponse: Decodable {
-          let access_token: String
-          let refresh_token: String
-          let expires_in: Double
-        }
-
-        let refreshed = try JSONDecoder().decode(RefreshResponse.self, from: data)
-
-        var updated = creds
-        updated.claudeAiOauth.accessToken = refreshed.access_token
-        updated.claudeAiOauth.refreshToken = refreshed.refresh_token
-        updated.claudeAiOauth.expiresAt = (Date().timeIntervalSince1970 + refreshed.expires_in) * 1000
-
-        print("Claudius Keychain: Token refreshed successfully")
-        return .success(updated)
-      } catch {
-        print("Claudius Keychain: Token refresh error: \(error)")
-        return .transient("Token refresh failed: \(error.localizedDescription)")
-      }
-    }
-
-    print("Claudius Keychain: Token refresh failed after retries")
-    return .transient("Token refresh rate limited — will retry")
+    var result: AnyObject?
+    guard SecItemCopyMatching(query, &result) == errSecSuccess,
+          let attrs = result as? [String: Any] else { return nil }
+    return attrs[kSecAttrModificationDate as String] as? Date
   }
 }
