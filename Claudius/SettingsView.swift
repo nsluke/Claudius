@@ -75,7 +75,7 @@ struct SettingsView: View {
       Section("Menu Bar Icon") {
         MenuBarStyleSegmentedPicker(selection: $menuBarStyleRaw)
 
-        Text("\"Bars\" shows a 5h-session bar above a 7d-weekly bar. \"Session %\" is the original percentage.")
+        Text("\"Bars\" shows one bar per usage window: 5h session, 7d weekly, and — if your account has one — a weekly cap for a specific model such as Fable. \"Session %\" is the original percentage.")
           .font(.caption)
           .foregroundStyle(.secondary)
       }

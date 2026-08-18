@@ -2,7 +2,7 @@
 
 A macOS menu bar app that shows your [Claude Code](https://docs.anthropic.com/en/docs/claude-code) usage in real time.
 
-Claudius reads Claude Code's OAuth token straight from your macOS Keychain, so it works the moment you launch it. It shows the same session and weekly utilization percentages you'd see on claude.ai, right in your menu bar. Optionally, it can push a live display to a [Tidbyt](https://tidbyt.com) LED device.
+Claudius reads Claude Code's OAuth token straight from your macOS Keychain, so it works the moment you launch it. It shows the same utilization percentages you'd see on claude.ai — session, weekly, and any per-model cap such as Fable — right in your menu bar. Optionally, it can push a live display to a [Tidbyt](https://tidbyt.com) LED device.
 
 > **Prerequisite:** You must have [Claude Code](https://docs.anthropic.com/en/docs/claude-code) installed and logged in (`claude` in your terminal). Claudius depends on the OAuth token that Claude Code stores in your macOS Keychain — without it, usage tracking will fall back to local log estimates.
 
@@ -12,7 +12,9 @@ Claudius reads Claude Code's OAuth token straight from your macOS Keychain, so i
 
 ## How It Works
 
-Claudius finds the OAuth token that Claude Code stores in your macOS Keychain (service `Claude Code-credentials`) and calls the Anthropic OAuth usage API every 5 minutes. The API returns your 5-hour session utilization and 7-day weekly utilization as percentages of your plan limit — the same numbers shown on the claude.ai settings page.
+Claudius finds the OAuth token that Claude Code stores in your macOS Keychain (service `Claude Code-credentials`) and calls the Anthropic OAuth usage API every 5 minutes. The API returns your usage as percentages of your plan limit — the same numbers shown on the claude.ai settings page.
+
+Claudius renders **whatever windows the API reports**, rather than a fixed pair. Today that's typically your 5-hour session window, your 7-day weekly window, and — on accounts that have one — a separate weekly cap that applies to a single model, such as Fable. If Anthropic adds, renames, or removes a window, Claudius picks up the change without an update: unrecognized windows are labelled with the name the API gives them, and windows that disappear simply stop rendering.
 
 If the token is missing or expired, Claudius falls back to reading Claude Code's local JSONL session logs from `~/.claude/projects/` and estimating usage from raw token counts.
 
@@ -27,8 +29,9 @@ macOS ties the one-time "Always Allow" grant to the app's designated requirement
 ## Features
 
 - **Zero-config auth** — automatically reads Claude Code's OAuth token from your Keychain; no session keys or org IDs to copy
-- **Customizable menu bar** — show session and weekly utilization as bars, numbers, both, or a single session percentage
-- **Dashboard window** — 5-hour session and 7-day weekly utilization with progress bars and reset countdowns
+- **Customizable menu bar** — show every reported usage window as bars, numbers, both, or a single session percentage
+- **Model-scoped caps** — surfaces a per-model weekly limit (e.g. Fable) automatically when your account reports one
+- **Dashboard window** — one progress bar and reset countdown per usage window
 - **Local fallback** — estimates usage from Claude Code's JSONL logs when OAuth isn't available
 - **Plan presets** — select Claude Pro, Max 5x, or Max 20x to set your limits
 - **Tidbyt integration** — push a live usage display to your Tidbyt LED device (optional)
@@ -81,7 +84,8 @@ That's it. No browser DevTools, no cookies, no org IDs.
 ```
 Claudius/
 ├── ClaudiusApp.swift            # App entry point, menu bar scene, AppState manager
-├── ClaudeWebUsageService.swift  # Anthropic OAuth API integration
+├── ClaudeWebUsageService.swift  # Anthropic OAuth API transport + diagnostics
+├── UsageBucket.swift            # Usage-window model and tolerant response decoding
 ├── KeychainHelper.swift         # Keychain access for Claude Code OAuth token and Tidbyt credentials
 ├── UsageView.swift              # Dashboard window with metrics and progress bars
 ├── SettingsView.swift           # Settings UI, plan selection, Tidbyt config

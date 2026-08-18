@@ -17,6 +17,15 @@ struct UsageStats {
 
   // MARK: - Web API fields (from api.anthropic.com/api/oauth/usage)
 
+  /// Every usage window the server reported, in display order: session first,
+  /// then the account-wide weekly window, then any model-scoped weekly caps
+  /// (Fable and friends). Empty in local-log mode.
+  ///
+  /// This is the authoritative list. The named fields below are conveniences
+  /// derived from it — `fiveHourUtilization != nil` is used app-wide as the
+  /// "we have web data" discriminator.
+  var buckets: [UsageBucket] = []
+
   /// 5-hour window utilization percentage (0–100) as reported by claude.ai.
   var fiveHourUtilization: Double? = nil
 
