@@ -15,6 +15,8 @@ import Foundation
 /// Represents the data source used for usage stats.
 enum UsageDataSource: String {
   case web = "claude.ai"
+  /// The Claude desktop app's on-disk usage cache — no token, no network.
+  case desktop = "Claude app"
   case local = "local logs"
 }
 

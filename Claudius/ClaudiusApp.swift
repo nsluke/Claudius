@@ -326,13 +326,22 @@ class AppState: ObservableObject {
     lastError = nil
 
     Task {
-      // Try OAuth API first (reads token from Claude Code's Keychain entry)
-      var stats: UsageStats?
-      stats = await ClaudeWebUsageService.fetchUsage(force: force)
+      // Source priority:
+      //  1. The Claude desktop app's on-disk usage cache. No token, no network
+      //     request, so it cannot expire, prompt, or be rate limited. This is
+      //     the correct source for anyone running Claude Code through the
+      //     desktop app, whose CLI Keychain item stops being maintained.
+      //  2. The OAuth API, for people running the Claude Code CLI.
+      //  3. Local JSONL estimates.
+      var stats = DesktopUsageReader.readUsage()
+
       if stats == nil {
-        print("Claudius: OAuth fetch failed, falling back to local logs")
-        let reason = await KeychainHelper.shared.claudeAuthProblem() ?? "OAuth fetch failed"
-        await MainActor.run { self.lastError = "\(reason) — using local logs" }
+        stats = await ClaudeWebUsageService.fetchUsage(force: force)
+        if stats == nil {
+          let reason = await KeychainHelper.shared.claudeAuthProblem() ?? "OAuth fetch failed"
+          print("Claudius: no web usage (\(reason)); falling back to local logs")
+          await MainActor.run { self.lastError = "\(reason) — using local logs" }
+        }
       }
 
       // Fall back to local JSONL parsing
