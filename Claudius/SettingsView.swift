@@ -56,6 +56,7 @@ enum TidbytLayout: String, CaseIterable, Identifiable {
 
 struct SettingsView: View {
   @Binding var currentUsage: UsageStats
+  @EnvironmentObject var appState: AppState
 
   @AppStorage("MenuBarIconStyle") private var menuBarStyleRaw: String = MenuBarIconStyle.bars.rawValue
 
@@ -224,23 +225,21 @@ struct SettingsView: View {
     isSyncing = true
     statusMessage = ""
 
+    // Delegate to AppState rather than re-implementing the source ladder here.
+    // This view used to call the OAuth API directly and fall back to local
+    // logs, which skipped the desktop cache entirely and pushed the wrong
+    // layout — and because it pushed outside AppState, it also left the
+    // per-bucket push throttle stale, suppressing the next corrective push.
     Task {
-      // Use OAuth API if available, same as performSync
-      var stats: UsageStats?
-      stats = await ClaudeWebUsageService.fetchUsage()
-      if stats == nil {
-        var local = TidbytManager.readTodayUsage()
-        local.dataSource = .local
-        stats = local
-      }
-      guard let stats else { return }
-      let pushed = await TidbytManager.push(stats: stats)
+      let pushed = await appState.runSync(force: true)
       await MainActor.run {
-        currentUsage = stats
-        if pushed {
+        switch pushed {
+        case true?:
           statusMessage = "✓ Pushed"
-        } else {
+        case false?:
           statusMessage = "✗ Push failed — check token, device ID, and server URL"
+        case nil:
+          statusMessage = "Sync already in progress"
         }
         isSyncing = false
       }

@@ -200,7 +200,9 @@ actor ClaudeTokenProvider {
     let days = Int(age / 86_400)
     print("Claudius Keychain: Claude Code has not updated its credentials in \(days) day(s) " +
           "— if you run Claude Code via the desktop app, that item is no longer maintained")
-    return "Claude Code's Keychain token is \(days)d stale — using the Claude app's usage cache"
+    // Deliberately does not claim which source will be used instead — this
+    // type has no idea whether the desktop cache or local logs will answer.
+    return "Claude Code's Keychain token hasn't been updated in \(days)d"
   }
 
   private static func isUsable(_ creds: KeychainHelper.ClaudeCredentials) -> Bool {

@@ -318,73 +318,92 @@ class AppState: ObservableObject {
     return force || percentChange > 0.01
   }
 
-  /// Fetches usage — tries OAuth API first, falls back to local JSONL.
-  /// Then pushes to Tidbyt if credentials are set.
+  /// Fire-and-forget sync, for timers and buttons.
   func performSync(force: Bool = false) {
-    guard !isSyncing else { return }
-    isSyncing = true
-    lastError = nil
+    Task { _ = await runSync(force: force) }
+  }
 
-    Task {
-      // Source priority:
-      //  1. The Claude desktop app's on-disk usage cache. No token, no network
-      //     request, so it cannot expire, prompt, or be rate limited. This is
-      //     the correct source for anyone running Claude Code through the
-      //     desktop app, whose CLI Keychain item stops being maintained.
-      //  2. The OAuth API, for people running the Claude Code CLI.
-      //  3. Local JSONL estimates.
-      var stats = DesktopUsageReader.readUsage()
+  /// The actual sync: picks a usage source, then pushes to Tidbyt if
+  /// credentials are set.
+  ///
+  /// Returns true if a Tidbyt push succeeded, false if one was attempted and
+  /// failed, nil if no push was needed or a sync was already running. Settings'
+  /// "Push to Device" goes through here rather than re-implementing the source
+  /// ladder — doing that behind AppState's back left `lastPushedBuckets` out of
+  /// sync, which then suppressed the next corrective push.
+  @discardableResult
+  func runSync(force: Bool = false) async -> Bool? {
+    let alreadySyncing = await MainActor.run { () -> Bool in
+      if self.isSyncing { return true }
+      self.isSyncing = true
+      self.lastError = nil
+      return false
+    }
+    if alreadySyncing { return nil }
 
+    // Source priority:
+    //  1. The Claude desktop app's on-disk usage cache. No token, no network
+    //     request, so it cannot expire, prompt, or be rate limited. This is
+    //     the correct source for anyone running Claude Code through the
+    //     desktop app, whose CLI Keychain item stops being maintained.
+    //  2. The OAuth API, for people running the Claude Code CLI.
+    //  3. Local JSONL estimates.
+    var stats = DesktopUsageReader.readUsage()
+
+    if stats == nil {
+      stats = await ClaudeWebUsageService.fetchUsage(force: force)
       if stats == nil {
-        stats = await ClaudeWebUsageService.fetchUsage(force: force)
-        if stats == nil {
-          let reason = await KeychainHelper.shared.claudeAuthProblem() ?? "OAuth fetch failed"
-          print("Claudius: no web usage (\(reason)); falling back to local logs")
-          await MainActor.run { self.lastError = "\(reason) — using local logs" }
-        }
+        let reason = await KeychainHelper.shared.claudeAuthProblem() ?? "OAuth fetch failed"
+        print("Claudius: no web usage (\(reason)); falling back to local logs")
+        await MainActor.run { self.lastError = "\(reason) — using local logs" }
       }
+    }
 
-      // Fall back to local JSONL parsing
-      if stats == nil {
-        var localStats = TidbytManager.readTodayUsage()
-        localStats.dataSource = .local
-        stats = localStats
-      }
+    // Fall back to local JSONL parsing
+    if stats == nil {
+      var localStats = TidbytManager.readTodayUsage()
+      localStats.dataSource = .local
+      stats = localStats
+    }
 
-      guard let stats else { return }
+    guard let stats else {
+      await MainActor.run { self.isSyncing = false }
+      return nil
+    }
 
-      let currentBuckets = Self.bucketUtilizations(stats)
-      let shouldPush = Self.shouldPush(
-        stats: stats,
-        force: force,
-        lastPushedBuckets: self.lastPushedBuckets,
-        lastPushedTokens: self.lastPushedTokens
-      )
+    let currentBuckets = Self.bucketUtilizations(stats)
+    let shouldPush = Self.shouldPush(
+      stats: stats,
+      force: force,
+      lastPushedBuckets: self.lastPushedBuckets,
+      lastPushedTokens: self.lastPushedTokens
+    )
 
-      if shouldPush {
-        let pushed = await TidbytManager.push(stats: stats)
-        await MainActor.run {
-          self.currentUsage = stats
-          if pushed {
-            self.lastSyncTime = Date()
-            self.lastPushedTokens = stats.tokens
-            self.lastPushedBuckets = currentBuckets
-          } else {
-            let hasCredentials =
-              KeychainHelper.shared.read(service: "ClaudeTidbyt", account: "TidbytToken") != nil &&
-              UserDefaults.standard.string(forKey: "TidbytDeviceID") != nil
-            if hasCredentials {
-              self.lastError = (self.lastError ?? "") + (self.lastError != nil ? " · " : "") + "Tidbyt push failed"
-            }
+    if shouldPush {
+      let pushed = await TidbytManager.push(stats: stats)
+      await MainActor.run {
+        self.currentUsage = stats
+        if pushed {
+          self.lastSyncTime = Date()
+          self.lastPushedTokens = stats.tokens
+          self.lastPushedBuckets = currentBuckets
+        } else {
+          let hasCredentials =
+            KeychainHelper.shared.read(service: "ClaudeTidbyt", account: "TidbytToken") != nil &&
+            UserDefaults.standard.string(forKey: "TidbytDeviceID") != nil
+          if hasCredentials {
+            self.lastError = (self.lastError ?? "") + (self.lastError != nil ? " · " : "") + "Tidbyt push failed"
           }
-          self.isSyncing = false
         }
-      } else {
-        await MainActor.run {
-          self.currentUsage = stats
-          self.isSyncing = false
-        }
+        self.isSyncing = false
       }
+      return pushed
+    } else {
+      await MainActor.run {
+        self.currentUsage = stats
+        self.isSyncing = false
+      }
+      return nil
     }
   }
 }
@@ -488,10 +507,19 @@ struct ClaudiusApp: App {
     return v > 0 ? v : 44_000
   }
 
-  /// Session utilization (0…1). Falls back to local tokens / tokenLimit when web data isn't available.
+  /// Session utilization (0…1). Falls back to local tokens / tokenLimit when
+  /// no server data is available.
+  ///
+  /// Keyed off `buckets`, not `fiveHourUtilization`: a response that reports
+  /// windows but no session window would otherwise be read as "no server data"
+  /// and silently show a local token estimate as if it were the session figure.
   private var sessionPct: Double {
-    if let webPct = appState.currentUsage.fiveHourUtilization {
-      return min(webPct / 100.0, 1.0)
+    let buckets = appState.currentUsage.buckets
+    if let session = buckets.first(where: { $0.role == .session }) {
+      return session.fraction
+    }
+    if let first = buckets.first {
+      return first.fraction
     }
     guard tokenLimit > 0 else { return 0 }
     return min(Double(appState.currentUsage.tokens) / Double(tokenLimit), 1.0)
@@ -517,8 +545,8 @@ struct ClaudiusApp: App {
   /// Color used by the legacy `.sessionPercent` style — preserves prior thresholds.
   private var legacyColor: Color {
     let pct: Double
-    if let webPct = appState.currentUsage.fiveHourUtilization {
-      pct = webPct / 100.0
+    if !appState.currentUsage.buckets.isEmpty {
+      pct = sessionPct
     } else {
       pct = min(appState.currentUsage.cost / costLimit, 1.0)
     }
@@ -549,6 +577,7 @@ struct ClaudiusApp: App {
 
     Settings {
       SettingsView(currentUsage: $appState.currentUsage)
+          .environmentObject(appState)
         .frame(width: 420)
     }
   }

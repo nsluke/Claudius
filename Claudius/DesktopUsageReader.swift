@@ -40,6 +40,13 @@ struct DesktopUsageReader {
   /// refusing to present genuinely stale numbers as current.
   static let maxSampleAge: TimeInterval = 45 * 60
 
+  /// Samples stamped slightly in the future are benign clock jitter; anything
+  /// beyond this is a wrong clock or a garbage timestamp. Without a lower
+  /// bound the staleness guard accepts *any* future date, and `max(by:)`
+  /// actively prefers the most future sample — so one bad row would win
+  /// permanently and pin the display to its values.
+  static let maxClockSkew: TimeInterval = 5 * 60
+
   // MARK: Wire format
 
   private struct History: Decodable {
@@ -85,6 +92,10 @@ struct DesktopUsageReader {
     let age = now.timeIntervalSince(sampledAt)
     guard age <= maxAge else {
       print("Claudius Desktop: newest sample is \(Int(age / 60))m old (limit \(Int(maxAge / 60))m) — ignoring")
+      return nil
+    }
+    guard age >= -maxClockSkew else {
+      print("Claudius Desktop: newest sample is dated \(Int(-age / 60))m in the future — ignoring")
       return nil
     }
 
