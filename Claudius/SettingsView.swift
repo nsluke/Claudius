@@ -70,6 +70,7 @@ struct SettingsView: View {
   @State private var selectedPlan: ClaudePlan = .manual
   @State private var isSyncing: Bool = false
   @State private var statusMessage: String = ""
+  @State private var pixletInstalled: Bool = true
 
   var body: some View {
     Form {
@@ -105,6 +106,20 @@ struct SettingsView: View {
         Picker("Layout", selection: $selectedLayout) {
           ForEach(TidbytLayout.allCases) { layout in
             Text(layout.rawValue).tag(layout)
+          }
+        }
+
+        if !pixletInstalled {
+          HStack(alignment: .top, spacing: 6) {
+            Image(systemName: "exclamationmark.triangle.fill")
+              .foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 2) {
+              Text("pixlet not installed")
+              Text("Claudius renders the display with the pixlet CLI — it's required for both Tidbyt cloud and Tronbyt pushes. Install it with:\nbrew install tidbyt/homebrew-tidbyt/pixlet")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+            }
           }
         }
 
@@ -187,6 +202,7 @@ struct SettingsView: View {
     // Attributes-only presence check — never decrypts Claude Code's item, so
     // opening Settings can't trigger a keychain prompt.
     oauthTokenFound = KeychainHelper.shared.claudeCredentialsPresent()
+    pixletInstalled = TidbytManager.isPixletInstalled
     tidbytToken = KeychainHelper.shared.read(service: "ClaudeTidbyt", account: "TidbytToken") ?? ""
     deviceID    = UserDefaults.standard.string(forKey: "TidbytDeviceID") ?? ""
     tronbytServerURL = UserDefaults.standard.string(forKey: "TronbytServerURL") ?? ""
@@ -236,6 +252,8 @@ struct SettingsView: View {
         switch pushed {
         case true?:
           statusMessage = "✓ Pushed"
+        case false? where !TidbytManager.isPixletInstalled:
+          statusMessage = "✗ pixlet not installed — run: brew install tidbyt/homebrew-tidbyt/pixlet"
         case false?:
           statusMessage = "✗ Push failed — check token, device ID, and server URL"
         case nil:

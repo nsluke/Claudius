@@ -392,7 +392,12 @@ class AppState: ObservableObject {
             KeychainHelper.shared.read(service: "ClaudeTidbyt", account: "TidbytToken") != nil &&
             UserDefaults.standard.string(forKey: "TidbytDeviceID") != nil
           if hasCredentials {
-            self.lastError = (self.lastError ?? "") + (self.lastError != nil ? " · " : "") + "Tidbyt push failed"
+            // A missing pixlet binary blocks every push, cloud or Tronbyt —
+            // naming it beats a generic "push failed".
+            let reason = TidbytManager.isPixletInstalled
+              ? "Tidbyt push failed"
+              : "pixlet not installed — see github.com/tidbyt/pixlet"
+            self.lastError = (self.lastError ?? "") + (self.lastError != nil ? " · " : "") + reason
           }
         }
         self.isSyncing = false
