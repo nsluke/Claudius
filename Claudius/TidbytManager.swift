@@ -111,20 +111,30 @@ struct TidbytManager {
 
   // MARK: - pixlet location
 
-  /// Common install locations for the pixlet CLI, checked at runtime.
-  private static let pixletCandidates = [
+  /// Common install locations for the pixlet CLI, in priority order.
+  static let pixletCandidates = [
     "/opt/homebrew/bin/pixlet",       // Homebrew Apple Silicon
     "/usr/local/bin/pixlet",          // Homebrew Intel
     "\(FileManager.default.homeDirectoryForCurrentUser.path)/go/bin/pixlet",
     "\(FileManager.default.homeDirectoryForCurrentUser.path)/.local/bin/pixlet",
   ]
 
+  /// The first candidate that exists, or nil if none do.
+  ///
+  /// Takes its filesystem check as a parameter so the lookup order can be
+  /// tested without depending on what happens to be installed on the machine
+  /// running the suite.
+  static func resolvePixletPath(
+    candidates: [String] = pixletCandidates,
+    fileExists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) }
+  ) -> String? {
+    candidates.first(where: fileExists)
+  }
+
   /// Resolved path to the pixlet binary, or nil if it isn't installed.
   /// pixlet renders the .star layout to a webp for BOTH the Tidbyt cloud
   /// and Tronbyt direct-push paths, so a missing binary blocks every push.
-  static var pixletPath: String? {
-    pixletCandidates.first { FileManager.default.fileExists(atPath: $0) }
-  }
+  static var pixletPath: String? { resolvePixletPath() }
 
   /// Whether the pixlet CLI is available. The UI uses this to explain a
   /// failed push ("pixlet not installed") rather than show a generic error.
