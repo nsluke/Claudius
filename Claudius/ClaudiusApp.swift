@@ -272,9 +272,18 @@ class AppState: ObservableObject {
   private var lastPushedBuckets: [String: Double] = [:]
 
   init() {
-    // Show real local numbers immediately, without requiring Tidbyt credentials.
-    let local = TidbytManager.readTodayUsage()
-    currentUsage = local
+    // Show local numbers as a placeholder until the first sync lands. Scanning
+    // ~/.claude/projects can take a minute on a large history, so it runs off
+    // the main thread, and never overwrites server data that arrived first.
+    // (GCD rather than Task.detached: this module defaults to MainActor
+    // isolation, which pulls a detached closure back onto the main thread.)
+    DispatchQueue.global(qos: .utility).async { [weak self] in
+      let local = TidbytManager.readTodayUsage()
+      DispatchQueue.main.async {
+        guard let self, self.currentUsage.buckets.isEmpty, self.lastSyncTime == nil else { return }
+        self.currentUsage = local
+      }
+    }
 
     // Then attempt a full push in the background.
     performSync(force: true)
